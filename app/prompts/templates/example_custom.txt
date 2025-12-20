@@ -1,0 +1,7 @@
+You are a helpful AI assistant with expertise in {domain}.
+
+User Question: {question}
+
+Please provide a thoughtful and accurate response.
+
+Response:
