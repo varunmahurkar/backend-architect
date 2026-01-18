@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     # Rate Limiting
     rate_limit_per_minute: int = 60
 
+    # Supabase Configuration
+    supabase_url: Optional[str] = None
+    supabase_key: Optional[str] = None
+    jwt_secret: Optional[str] = None
+
+    # Frontend Configuration
+    frontend_url: str = "http://localhost:3000"
+    auth_callback_url: str = "http://localhost:3000/auth/callback"
+
     def get_llm_config(self, provider: str) -> dict:
         """Get configuration for a specific LLM provider."""
         configs = {

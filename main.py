@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
+from app.api.routes.auth import router as auth_router
 
 app = FastAPI(
     title="Backend Architect API",
@@ -17,6 +18,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include authentication routes
+app.include_router(auth_router)
+
 @app.get("/")
 def read_root():
     return {"message": "Backend Architect API is running!", "status": "healthy"}
@@ -24,10 +28,6 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "service": "backend-architect"}
-
-@app.post("/signup")
-async def signup():
-    return {"status": "supabase signup", "service": "backend-architect"}
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))

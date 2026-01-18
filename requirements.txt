@@ -3,6 +3,8 @@ pydantic==2.8.0
 pydantic-settings==2.5.2
 uvicorn[standard]
 supabase
+python-jose[cryptography]
+PyJWT>=2.8.0
 langchain==0.3.13
 langchain-openai==0.2.14
 langchain-anthropic==0.3.4
