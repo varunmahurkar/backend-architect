@@ -6,7 +6,20 @@ from app.api.models.auth import (
     ErrorResponse,
     PhoneSignUpRequest,
     PhoneVerifyRequest,
-    OTPResponse
+    OTPResponse,
+    SubscriptionStatus,
+    AuthUserRole,
+    AccountStatus,
+    NotificationPreferences,
+    UserProfile,
+    SignUpRequestExtended,
+    UsernameCheckRequest,
+    UsernameCheckResponse,
+    BloomFilterResponse,
+    PasswordValidationRequest,
+    PasswordValidationResponse,
+    UsernameAvailabilityResponse,
+    RandomUsernameResponse
 )
 
 __all__ = [
@@ -17,5 +30,18 @@ __all__ = [
     "ErrorResponse",
     "PhoneSignUpRequest",
     "PhoneVerifyRequest",
-    "OTPResponse"
+    "OTPResponse",
+    "SubscriptionStatus",
+    "AuthUserRole",
+    "AccountStatus",
+    "NotificationPreferences",
+    "UserProfile",
+    "SignUpRequestExtended",
+    "UsernameCheckRequest",
+    "UsernameCheckResponse",
+    "BloomFilterResponse",
+    "PasswordValidationRequest",
+    "PasswordValidationResponse",
+    "UsernameAvailabilityResponse",
+    "RandomUsernameResponse"
 ]

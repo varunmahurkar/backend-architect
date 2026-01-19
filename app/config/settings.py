@@ -43,7 +43,8 @@ class Settings(BaseSettings):
 
     # Supabase Configuration
     supabase_url: Optional[str] = None
-    supabase_key: Optional[str] = None
+    supabase_key: Optional[str] = None  # anon key for client operations
+    supabase_service_role_key: Optional[str] = None  # service role key for DB operations (bypasses RLS)
     jwt_secret: Optional[str] = None
 
     # Frontend Configuration

@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uvicorn
 import os
 from app.api.routes.auth import router as auth_router
@@ -10,13 +11,55 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# CORS Configuration - Allow frontend origins
+# Using wildcard patterns for development flexibility
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "https://localhost:3000",
+    "https://127.0.0.1:3000",
+    os.getenv("FRONTEND_URL", "http://localhost:3000"),
+]
+
+# Add any additional origins from environment
+additional_origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
+origins.extend([o.strip() for o in additional_origins if o.strip()])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
+    allow_headers=[
+        "Accept",
+        "Accept-Language",
+        "Content-Type",
+        "Content-Language",
+        "Authorization",
+        "X-Requested-With",
+        "Origin",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Headers",
+    ],
+    expose_headers=["*"],
+    max_age=86400,  # 24 hours preflight cache
 )
+
+
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(request: Request, rest_of_path: str):
+    """Handle preflight OPTIONS requests explicitly for CORS."""
+    return JSONResponse(
+        content={"message": "OK"},
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "Accept, Accept-Language, Content-Type, Authorization, X-Requested-With",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
 
 # Include authentication routes
 app.include_router(auth_router)
