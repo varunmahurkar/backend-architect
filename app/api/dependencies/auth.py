@@ -1,10 +1,18 @@
+"""
+Authentication dependencies for FastAPI routes.
+Uses Supabase to verify JWT tokens.
+"""
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
-import jwt
-from datetime import datetime
 from app.config.settings import settings
+
+try:
+    from supabase import create_client
+except ImportError:
+    raise ImportError("Supabase not installed")
 
 security = HTTPBearer(auto_error=False)
 
@@ -19,11 +27,18 @@ class TokenPayload(BaseModel):
     role: Optional[str] = None
 
 
+def get_supabase_client():
+    """Get Supabase client for auth verification."""
+    if not settings.supabase_url or not settings.supabase_key:
+        raise ValueError("Supabase not configured")
+    return create_client(settings.supabase_url, settings.supabase_key)
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> TokenPayload:
     """
-    Validate JWT token and return current user payload.
+    Validate JWT token using Supabase and return current user payload.
 
     Raises 401 if token is missing or invalid.
     """
@@ -37,50 +52,33 @@ async def get_current_user(
     token = credentials.credentials
 
     try:
-        # Supabase JWT secret
-        jwt_secret = settings.jwt_secret
-        if not jwt_secret:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="JWT secret not configured"
-            )
+        supabase = get_supabase_client()
 
-        # Decode and verify the JWT token
-        payload = jwt.decode(
-            token,
-            jwt_secret,
-            algorithms=["HS256"],
-            audience="authenticated"
-        )
+        # Use Supabase to verify the token and get user
+        user_response = supabase.auth.get_user(token)
 
-        # Check token expiration
-        exp = payload.get("exp")
-        if exp and datetime.utcnow().timestamp() > exp:
+        if user_response is None or user_response.user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has expired",
+                detail="Invalid or expired token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        user = user_response.user
+
         return TokenPayload(
-            sub=payload.get("sub"),
-            email=payload.get("email"),
-            aud=payload.get("aud"),
-            exp=payload.get("exp"),
-            iat=payload.get("iat"),
-            role=payload.get("role")
+            sub=user.id,
+            email=user.email,
+            aud="authenticated",
+            role=user.role if hasattr(user, 'role') else None
         )
 
-    except jwt.ExpiredSignatureError:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    except jwt.InvalidTokenError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {str(e)}",
+            detail=f"Token verification failed: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

@@ -28,8 +28,7 @@ from app.services.user_service import (
 )
 from app.services.password_service import (
     validate_password,
-    calculate_password_strength,
-    hash_password
+    calculate_password_strength
 )
 from app.services.bloom_filter_service import (
     check_username_availability_fast,
@@ -46,40 +45,6 @@ except ImportError:
     raise ImportError("Supabase client is not installed. Install it with: pip install supabase")
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
-
-
-@router.get("/test-db")
-async def test_database_connection():
-    """
-    Test endpoint to verify database connection and table access.
-    Use this to debug connection issues.
-    """
-    result = {
-        "supabase_url_configured": bool(settings.supabase_url),
-        "supabase_key_configured": bool(settings.supabase_key),
-        "supabase_service_role_key_configured": bool(settings.supabase_service_role_key),
-        "connection_test": None,
-        "table_access_test": None,
-        "error": None
-    }
-
-    try:
-        from app.services.user_service import get_supabase_admin_client
-        supabase = get_supabase_admin_client()
-        result["connection_test"] = "SUCCESS"
-
-        # Try to read from auth_users_table
-        try:
-            response = supabase.table("auth_users_table").select("username").limit(1).execute()
-            result["table_access_test"] = f"SUCCESS - Found {len(response.data)} rows"
-        except Exception as e:
-            result["table_access_test"] = f"FAILED: {str(e)}"
-
-    except Exception as e:
-        result["connection_test"] = "FAILED"
-        result["error"] = str(e)
-
-    return result
 
 
 def get_supabase_client():
@@ -136,17 +101,12 @@ async def signup(request: SignUpRequest) -> AuthResponse:
                 )
         except HTTPException:
             raise
-        except Exception as e:
-            # If Bloom filter check fails, proceed anyway - DB will enforce uniqueness
-            print(f"Username availability check failed (proceeding): {e}")
-
-        # Hash password with custom algorithm (bcrypt + pepper + twist)
-        hashed_password = hash_password(request.password)
+        except Exception:
+            pass  # If Bloom filter check fails, proceed - DB will enforce uniqueness
 
         supabase = get_supabase_client()
 
-        # Sign up user with Supabase Auth (still using plain password for Supabase)
-        # The hashed password is stored in our custom table
+        # Sign up user with Supabase Auth
         response = supabase.auth.sign_up({
             "email": request.email,
             "password": request.password,
@@ -160,26 +120,18 @@ async def signup(request: SignUpRequest) -> AuthResponse:
 
         user = response.user
 
-        # Sync to auth_users_table with hashed password
-        # This is critical - we need to store the user data in our custom table
+        # Sync to auth_users_table
         sync_error = None
         try:
-            print(f"Syncing user to auth_users_table: {user.id}, {user.email}, {request.username}")
             sync_user_signup(
                 user_uuid=user.id,
                 email=user.email,
                 username=request.username,
-                name=request.full_name,
-                hashed_password=hashed_password
+                name=request.full_name
             )
-            print(f"Successfully synced user to auth_users_table")
-            # Add username to Bloom filter for fast future checks
             add_username_to_filter(request.username)
         except Exception as e:
             sync_error = str(e)
-            print(f"ERROR: Could not sync to auth_users_table: {e}")
-            import traceback
-            traceback.print_exc()
 
         user_response = UserResponse(
             id=user.id,
@@ -189,11 +141,9 @@ async def signup(request: SignUpRequest) -> AuthResponse:
             created_at=user.created_at if hasattr(user, 'created_at') else None
         )
 
-        # Build response message
+        message = "Account created successfully. Check your email for verification."
         if sync_error:
-            message = f"User created in Auth but failed to sync to database: {sync_error}"
-        else:
-            message = "User account created successfully. Check your email for verification."
+            message = f"Account created but profile sync failed: {sync_error}"
 
         return AuthResponse(
             success=True,
@@ -356,36 +306,114 @@ async def get_current_user_info(
     current_user: TokenPayload = Depends(get_current_user)
 ) -> UserResponse:
     """
-    Get current authenticated user information.
+    Get current authenticated user information from auth_users_table.
 
     Requires valid JWT token in Authorization header.
 
     Returns:
         UserResponse with current user data
     """
+    # Fetch user profile from auth_users_table
+    profile = get_user_by_uuid(current_user.sub)
+
+    if profile:
+        return UserResponse(
+            id=current_user.sub,
+            email=profile.get("email", current_user.email or ""),
+            username=profile.get("username"),
+            full_name=profile.get("name"),
+            created_at=profile.get("created_at"),
+            last_sign_in_at=profile.get("last_login_at")
+        )
+
+    # Fallback to token payload data
+    return UserResponse(
+        id=current_user.sub,
+        email=current_user.email or "",
+        created_at=None,
+        last_sign_in_at=None
+    )
+
+
+@router.get("/profile")
+async def get_user_profile(
+    current_user: TokenPayload = Depends(get_current_user)
+) -> dict:
+    """
+    Get full user profile from auth_users_table.
+
+    Returns all profile fields including subscription status, verification status, etc.
+    """
+    profile = get_user_by_uuid(current_user.sub)
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Profile not found"
+        )
+
+    return {
+        "success": True,
+        "profile": {
+            "user_uuid": profile.get("user_uuid"),
+            "username": profile.get("username"),
+            "email": profile.get("email"),
+            "name": profile.get("name"),
+            "profile_image_url": profile.get("profile_image_url"),
+            "subscription_status": profile.get("subscription_status"),
+            "auth_user_role": profile.get("auth_user_role"),
+            "is_verified": profile.get("is_verified"),
+            "created_at": profile.get("created_at"),
+            "updated_at": profile.get("updated_at"),
+            "last_login_at": profile.get("last_login_at"),
+        }
+    }
+
+
+@router.put("/profile")
+async def update_user_profile(
+    current_user: TokenPayload = Depends(get_current_user),
+    name: Optional[str] = None,
+    profile_image_url: Optional[str] = None
+) -> dict:
+    """
+    Update user profile in auth_users_table.
+
+    Only allows updating name and profile_image_url.
+    """
+    from app.services.user_service import get_supabase_admin_client
+    from datetime import datetime, timezone
+
+    supabase = get_supabase_admin_client()
+
+    update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if name is not None:
+        update_data["name"] = name
+    if profile_image_url is not None:
+        update_data["profile_image_url"] = profile_image_url
+
     try:
-        supabase = get_supabase_client()
+        result = supabase.table("auth_users_table").update(update_data).eq(
+            "user_uuid", current_user.sub
+        ).execute()
 
-        # Fetch user data from Supabase
-        response = supabase.auth.get_user(
-            supabase.auth._get_session().access_token if supabase.auth._get_session() else None
-        )
+        if not result.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Profile not found"
+            )
 
-        # If we can't get user from session, use the token payload
-        return UserResponse(
-            id=current_user.sub,
-            email=current_user.email or "",
-            created_at=None,  # Not available in token
-            last_sign_in_at=None
-        )
-
+        return {
+            "success": True,
+            "message": "Profile updated",
+            "profile": result.data[0]
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        # Fallback to token payload data
-        return UserResponse(
-            id=current_user.sub,
-            email=current_user.email or "",
-            created_at=None,
-            last_sign_in_at=None
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to update profile: {str(e)}"
         )
 
 

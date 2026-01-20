@@ -29,20 +29,14 @@ def get_supabase_client():
 def get_supabase_admin_client():
     """
     Get Supabase client with service role key (for database operations).
-    This bypasses Row Level Security (RLS) and can insert/update/delete data.
+    This bypasses Row Level Security (RLS).
     """
     if not settings.supabase_url:
-        raise ValueError("SUPABASE_URL not configured in environment variables")
+        raise ValueError("SUPABASE_URL not configured")
 
-    # Prefer service role key for DB operations, fall back to anon key
     key = settings.supabase_service_role_key or settings.supabase_key
-
-    if settings.supabase_service_role_key:
-        print("Using SUPABASE_SERVICE_ROLE_KEY for database operations")
-    elif settings.supabase_key:
-        print("WARNING: Using SUPABASE_KEY (anon key) - may fail due to RLS. Set SUPABASE_SERVICE_ROLE_KEY for full access.")
-    else:
-        raise ValueError("No Supabase key configured. Set SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY")
+    if not key:
+        raise ValueError("No Supabase key configured")
 
     return create_client(settings.supabase_url, key)
 
@@ -83,8 +77,7 @@ def sync_user_signup(
     user_uuid: str,
     email: str,
     username: str,
-    name: Optional[str] = None,
-    hashed_password: Optional[str] = None
+    name: Optional[str] = None
 ) -> dict:
     """
     Sync user to auth_users_table on signup.
@@ -94,48 +87,31 @@ def sync_user_signup(
         email: User email address
         username: Validated username (6-18 chars, starts with letter)
         name: Optional display name
-        hashed_password: Optional password hashed with custom algorithm
     """
-    print(f"=== sync_user_signup called ===")
-    print(f"user_uuid: {user_uuid}")
-    print(f"email: {email}")
-    print(f"username: {username}")
-
-    # Use admin client for database operations (bypasses RLS)
     supabase = get_supabase_admin_client()
-    now = datetime.now(timezone.utc).isoformat()
 
+    # Build user data matching the actual table columns
+    # ENUM values:
+    #   subscription_status: 'hooray', 'pending', 'uhoh'
+    #   auth_user_role (roles): 'free', 'subscriber', 'business'
+    # Note: payment_customer_id uses user_uuid as placeholder (unique constraint requires non-null)
     user_data = {
         "user_uuid": user_uuid,
         "email": email,
-        "username": username.lower(),
+        "username": username.lower() if username else "",
         "name": name,
         "shard_num": generate_shard_number(username),
-        "subscription_status": "free",
+        "subscription_status": "pending",
         "auth_user_role": "free",
         "is_verified": False,
-        "created_at": now,
-        "updated_at": now,
-        "last_login_at": now,
+        "payment_customer_id": f"pending_{user_uuid}",
     }
 
-    # Add hashed password if provided (for custom auth verification)
-    if hashed_password:
-        user_data["password_hash"] = hashed_password
-
+    # Remove None values (but keep empty strings and False)
     user_data = {k: v for k, v in user_data.items() if v is not None}
 
-    print(f"Inserting into auth_users_table: {list(user_data.keys())}")
-
-    try:
-        result = supabase.table("auth_users_table").insert(user_data).execute()
-        print(f"SUCCESS: User synced to auth_users_table: {username}")
-        print(f"Result: {result.data}")
-        return result.data[0] if result.data else user_data
-    except Exception as e:
-        print(f"FAILED: Signup sync error: {e}")
-        print(f"Error type: {type(e).__name__}")
-        raise e
+    result = supabase.table("auth_users_table").insert(user_data).execute()
+    return result.data[0] if result.data else user_data
 
 
 def sync_user_signin(user_uuid: str) -> dict:
