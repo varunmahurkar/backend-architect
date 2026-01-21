@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     # OpenAI Configuration
     openai_api_key: Optional[str] = None
-    openai_model: str = "gpt-4"
+    openai_model: str = "gpt-4o-mini"
     openai_temperature: float = 0.7
     openai_max_tokens: int = 2000
 
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # Google Configuration
     google_api_key: Optional[str] = None
-    google_model: str = "gemini-1.5-pro"
+    google_model: str = "gemini-2.0-flash"
     google_temperature: float = 0.7
     google_max_tokens: int = 2000
 
