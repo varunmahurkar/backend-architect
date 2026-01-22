@@ -51,6 +51,21 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:3000"
     auth_callback_url: str = "http://localhost:3000/auth/callback"
 
+    # Crawler Configuration
+    crawler_timeout: int = 30  # Seconds per page
+    crawler_max_content_length: int = 50000  # Characters per page
+    crawler_content_per_source: int = 8000  # Characters per source in LLM context
+    crawler_max_concurrent: int = 5
+    crawler_user_agent: str = "NuravBot/1.0 (+https://nurav.ai)"
+
+    # Search Configuration
+    default_search_engine: str = "duckduckgo"
+    search_max_results: int = 5
+
+    # Playwright Configuration
+    playwright_headless: bool = True
+    playwright_browser: str = "chromium"
+
     def get_llm_config(self, provider: str) -> dict:
         """Get configuration for a specific LLM provider."""
         configs = {

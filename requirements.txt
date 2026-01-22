@@ -11,3 +11,16 @@ langchain-anthropic==0.3.4
 langchain-google-genai==2.0.8
 langgraph==0.2.59
 python-dotenv==1.0.0
+
+# Web Crawling
+crawlee[beautifulsoup]>=0.3.0
+crawlee[playwright]>=0.3.0
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# Web Search
+duckduckgo-search>=4.0.0
+
+# HTTP Client (async)
+httpx>=0.25.0

@@ -1,22 +1,18 @@
 """
-Chat API routes for LLM interactions.
-Supports multiple providers with streaming responses.
+Crawler API routes for web crawling and citation-based chat.
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from typing import Optional, Literal, List, AsyncGenerator
-from app.api.dependencies.auth import get_current_user, get_optional_user, TokenPayload
-from app.services.llm_service import (
-    chat,
-    chat_stream,
-    get_available_providers,
-    LLMProvider,
-)
+from typing import Optional, AsyncGenerator
+
+from app.api.dependencies.auth import get_optional_user, TokenPayload
 from app.api.models.crawler import (
-    CrawlerType,
-    Citation,
+    CrawlRequest,
+    CrawlResponse,
+    SearchAndCrawlRequest,
+    WebChatRequest,
+    WebChatResponse,
     CitationList,
     TriggerMode,
     StreamChunk,
@@ -27,85 +23,97 @@ from app.services.crawler_service import (
     generate_citations,
     build_context_for_llm,
 )
+from app.services.llm_service import chat, chat_stream
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(prefix="/crawler", tags=["crawler"])
 
 
 # === Citation System Prompt ===
 
 CITATION_SYSTEM_PROMPT = """You are Nurav AI, a helpful assistant with access to web search results.
 
-CRITICAL CITATION RULES - YOU MUST FOLLOW THESE:
-1. Add inline citations using this EXACT format: 【domain.com】 (use the special brackets 【 and 】)
-2. Use the "Domain for citation" value provided with each source (e.g., 【openai.com】, 【wikipedia.org】)
-3. Place citations IMMEDIATELY after the sentence or fact you're citing
-4. You can cite multiple sources: "This fact 【source1.com】【source2.com】"
-5. ALWAYS cite when using information from the provided sources
-6. Only omit citations for general knowledge not from sources
+IMPORTANT CITATION RULES:
+1. Use inline citations in the format [1], [2], etc. to reference sources
+2. Place citations immediately after the relevant information
+3. You can cite multiple sources for the same fact: [1][3]
+4. Only cite sources that are actually relevant to your statement
+5. If information is not from the provided sources, don't add a citation
+6. Always base your response on the provided source content
 
-Example with sources:
-If sources include "Domain for citation: openai.com" and "Domain for citation: techcrunch.com"
+Example response format:
+"Python was created by Guido van Rossum [1] and first released in 1991 [2]. It emphasizes code readability [1][3]."
 
-Your response should be:
-"GPT-4 was released by OpenAI in March 2023 【openai.com】. It showed major improvements in reasoning 【techcrunch.com】."
-
-IMPORTANT: Use 【 and 】 brackets (NOT regular brackets). These are special Unicode characters.
-
-The web sources are provided below. Use them to answer accurately with proper citations."""
+The web sources are provided below. Use them to answer the user's question accurately with proper citations."""
 
 
-class ChatMessage(BaseModel):
-    """Single chat message."""
-    role: Literal["user", "assistant", "system"]
-    content: str
-
-
-class ChatRequest(BaseModel):
-    """Chat request payload."""
-    message: str = Field(..., min_length=1, max_length=10000)
-    provider: Optional[LLMProvider] = "google"
-    chat_history: Optional[list[ChatMessage]] = None
-    system_prompt: Optional[str] = None
-    stream: bool = False
-    # Web search options
-    web_search_enabled: bool = Field(default=False, description="Enable Perplexity-style search")
-    urls: Optional[List[str]] = Field(None, max_length=10, description="Explicit URLs to crawl")
-    crawler_type: CrawlerType = Field(default=CrawlerType.AUTO, description="auto, beautifulsoup, or playwright")
-
-
-class ChatResponse(BaseModel):
-    """Chat response payload."""
-    success: bool
-    message: str
-    provider: str
-    model: Optional[str] = None
-    # Citation support
-    citations: Optional[CitationList] = None
-    trigger_mode: Optional[TriggerMode] = None
-    search_query: Optional[str] = Field(None, description="Query used if auto-search was triggered")
-
-
-class ProvidersResponse(BaseModel):
-    """Available providers response."""
-    providers: list[dict]
-
-
-@router.post("/completions", response_model=ChatResponse)
-async def chat_completions(
-    request: ChatRequest,
+@router.post("/crawl", response_model=CrawlResponse)
+async def crawl_endpoint(
+    request: CrawlRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
     """
-    Send a message to the LLM and get a response.
+    Crawl specific URLs.
 
-    - **message**: User message (required)
-    - **provider**: LLM provider - google, openai, anthropic (default: google)
-    - **chat_history**: Previous messages for context
-    - **system_prompt**: Custom system prompt
-    - **stream**: Enable streaming (use /chat/stream endpoint instead)
-    - **web_search_enabled**: Enable Perplexity-style web search
-    - **urls**: Explicit URLs to crawl for context
+    - **urls**: List of URLs to crawl (max 10)
     - **crawler_type**: auto, beautifulsoup, or playwright
+    """
+    try:
+        result = await crawl_urls(
+            urls=request.urls,
+            crawler_type=request.crawler_type,
+        )
+        return CrawlResponse(success=True, result=result)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Crawl failed: {str(e)}",
+        )
+
+
+@router.post("/search-and-crawl", response_model=CrawlResponse)
+async def search_and_crawl_endpoint(
+    request: SearchAndCrawlRequest,
+    current_user: Optional[TokenPayload] = Depends(get_optional_user),
+):
+    """
+    Search web and crawl top results (Perplexity-style).
+
+    - **query**: Search query
+    - **max_results**: Number of results to crawl (1-10)
+    - **search_engine**: duckduckgo (default)
+    """
+    try:
+        result, urls = await search_and_crawl(
+            query=request.query,
+            max_results=request.max_results,
+            crawler_type=request.crawler_type,
+            search_engine=request.search_engine,
+        )
+        return CrawlResponse(success=True, result=result)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Search and crawl failed: {str(e)}",
+        )
+
+
+@router.post("/chat", response_model=WebChatResponse)
+async def web_chat_endpoint(
+    request: WebChatRequest,
+    current_user: Optional[TokenPayload] = Depends(get_optional_user),
+):
+    """
+    Chat with web crawling and citations.
+
+    Two modes:
+    1. **Explicit URLs**: Provide urls[] to crawl specific pages
+    2. **Auto-search**: Set web_search_enabled=true for Perplexity-style search
+
+    Response includes:
+    - message: LLM response with [1], [2] citation markers
+    - citations: Structured citation data for frontend rendering
     """
     try:
         trigger_mode = None
@@ -120,7 +128,7 @@ async def chat_completions(
         # Mode 2: Auto-search enabled
         elif request.web_search_enabled:
             trigger_mode = TriggerMode.AUTO_SEARCH
-            search_query = request.message
+            search_query = request.message  # Use message as search query
             crawl_result, _ = await search_and_crawl(
                 query=request.message,
                 max_results=5,
@@ -128,7 +136,7 @@ async def chat_completions(
             )
 
         # Build context and citations if crawl was performed
-        citations = None
+        citations = CitationList()
         system_prompt = request.system_prompt
 
         if crawl_result and crawl_result.pages:
@@ -151,8 +159,12 @@ async def chat_completions(
         # Convert chat history to dict format
         history = None
         if request.chat_history:
-            history = [{"role": msg.role, "content": msg.content} for msg in request.chat_history]
+            history = [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.chat_history
+            ]
 
+        # Call LLM
         response = await chat(
             message=request.message,
             provider=request.provider,
@@ -160,7 +172,7 @@ async def chat_completions(
             system_prompt=system_prompt,
         )
 
-        return ChatResponse(
+        return WebChatResponse(
             success=True,
             message=response,
             provider=request.provider or "google",
@@ -177,21 +189,19 @@ async def chat_completions(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Chat failed: {str(e)}",
+            detail=f"Web chat failed: {str(e)}",
         )
 
 
-@router.post("/stream")
-async def chat_stream_endpoint(
-    request: ChatRequest,
+@router.post("/chat/stream")
+async def web_chat_stream_endpoint(
+    request: WebChatRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
     """
-    Stream a response from the LLM.
+    Stream chat response with web crawling and citations.
 
-    Returns Server-Sent Events (SSE) stream.
-
-    When web_search_enabled=true or urls are provided:
+    Returns Server-Sent Events (SSE) stream with:
     - type: "citation" - Citation data (sent first)
     - type: "content" - Response text chunks
     - type: "done" - Stream complete
@@ -199,19 +209,22 @@ async def chat_stream_endpoint(
     """
     async def generate() -> AsyncGenerator[str, None]:
         try:
+            trigger_mode = None
             crawl_result = None
 
             # Crawl phase
             if request.urls and len(request.urls) > 0:
+                trigger_mode = TriggerMode.EXPLICIT_URLS
                 crawl_result = await crawl_urls(request.urls, request.crawler_type)
             elif request.web_search_enabled:
+                trigger_mode = TriggerMode.AUTO_SEARCH
                 crawl_result, _ = await search_and_crawl(
                     query=request.message,
                     max_results=5,
                     crawler_type=request.crawler_type,
                 )
 
-            # Send citations first and build context
+            # Send citations first
             citations = []
             system_prompt = request.system_prompt
 
@@ -245,26 +258,16 @@ async def chat_stream_endpoint(
                 chat_history=history,
                 system_prompt=system_prompt,
             ):
-                # Use StreamChunk format if web search was used, otherwise plain text
-                if crawl_result:
-                    chunk = StreamChunk(type="content", content=text_chunk)
-                    yield f"data: {chunk.model_dump_json()}\n\n"
-                else:
-                    yield f"data: {text_chunk}\n\n"
+                chunk = StreamChunk(type="content", content=text_chunk)
+                yield f"data: {chunk.model_dump_json()}\n\n"
 
             # Signal completion
-            if crawl_result:
-                done_chunk = StreamChunk(type="done")
-                yield f"data: {done_chunk.model_dump_json()}\n\n"
-            else:
-                yield "data: [DONE]\n\n"
+            done_chunk = StreamChunk(type="done")
+            yield f"data: {done_chunk.model_dump_json()}\n\n"
 
         except Exception as e:
-            if crawl_result:
-                error_chunk = StreamChunk(type="error", error=str(e))
-                yield f"data: {error_chunk.model_dump_json()}\n\n"
-            else:
-                yield f"data: [ERROR] {str(e)}\n\n"
+            error_chunk = StreamChunk(type="error", error=str(e))
+            yield f"data: {error_chunk.model_dump_json()}\n\n"
 
     return StreamingResponse(
         generate(),
@@ -275,24 +278,3 @@ async def chat_stream_endpoint(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-@router.get("/providers", response_model=ProvidersResponse)
-async def list_providers():
-    """
-    Get list of available LLM providers.
-
-    Returns configured providers with their models.
-    """
-    providers = get_available_providers()
-
-    if not providers:
-        return ProvidersResponse(providers=[{
-            "id": "google",
-            "name": "Google Gemini",
-            "model": "gemini-1.5-pro",
-            "available": False,
-            "message": "No API keys configured",
-        }])
-
-    return ProvidersResponse(providers=providers)

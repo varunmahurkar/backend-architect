@@ -22,7 +22,23 @@ from app.api.models.auth import (
     RandomUsernameResponse
 )
 
+from app.api.models.crawler import (
+    CrawlerType,
+    TriggerMode,
+    Citation,
+    CitationList,
+    CrawledPage,
+    CrawlResult,
+    CrawlRequest,
+    SearchAndCrawlRequest,
+    WebChatRequest,
+    WebChatResponse,
+    CrawlResponse,
+    StreamChunk,
+)
+
 __all__ = [
+    # Auth models
     "SignUpRequest",
     "SignInRequest",
     "UserResponse",
@@ -43,5 +59,18 @@ __all__ = [
     "PasswordValidationRequest",
     "PasswordValidationResponse",
     "UsernameAvailabilityResponse",
-    "RandomUsernameResponse"
+    "RandomUsernameResponse",
+    # Crawler models
+    "CrawlerType",
+    "TriggerMode",
+    "Citation",
+    "CitationList",
+    "CrawledPage",
+    "CrawlResult",
+    "CrawlRequest",
+    "SearchAndCrawlRequest",
+    "WebChatRequest",
+    "WebChatResponse",
+    "CrawlResponse",
+    "StreamChunk",
 ]
