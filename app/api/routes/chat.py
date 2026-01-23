@@ -3,11 +3,14 @@ Chat API routes for LLM interactions.
 Supports multiple providers with streaming responses.
 """
 
+import logging
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, List, AsyncGenerator
 from app.api.dependencies.auth import get_current_user, get_optional_user, TokenPayload
+
+logger = logging.getLogger(__name__)
 from app.services.llm_service import (
     chat,
     chat_stream,
@@ -203,20 +206,29 @@ async def chat_stream_endpoint(
 
             # Crawl phase
             if request.urls and len(request.urls) > 0:
+                logger.info(f"Crawling explicit URLs: {request.urls}")
                 crawl_result = await crawl_urls(request.urls, request.crawler_type)
             elif request.web_search_enabled:
-                crawl_result, _ = await search_and_crawl(
+                logger.info(f"Web search enabled, searching for: {request.message}")
+                crawl_result, search_urls = await search_and_crawl(
                     query=request.message,
                     max_results=5,
                     crawler_type=request.crawler_type,
                 )
+                logger.info(f"Search returned {len(search_urls)} URLs")
 
             # Send citations first and build context
             citations = []
             system_prompt = request.system_prompt
 
+            if crawl_result:
+                logger.info(f"Crawl result: {crawl_result.total_pages} pages, {crawl_result.successful_pages} successful")
+                for page in crawl_result.pages:
+                    logger.info(f"  Page: {page.url}, content length: {len(page.content)}, error: {page.error}")
+
             if crawl_result and crawl_result.pages:
                 citations = generate_citations(crawl_result.pages)
+                logger.info(f"Generated {len(citations)} citations")
 
                 # Send each citation as SSE event
                 for citation in citations:

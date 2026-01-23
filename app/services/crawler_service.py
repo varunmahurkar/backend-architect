@@ -4,6 +4,7 @@ Uses Crawlee with BeautifulSoup (static) and Playwright (JS) crawlers.
 """
 
 import asyncio
+import logging
 import re
 import time
 from datetime import timedelta
@@ -11,6 +12,8 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from app.api.models.crawler import (
     CrawlerType,
@@ -145,20 +148,19 @@ async def crawl_with_beautifulsoup(urls: List[str]) -> List[CrawledPage]:
     """Crawl URLs using BeautifulSoup (for static HTML)."""
     from crawlee.crawlers import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
 
-    results: List[CrawledPage] = []
-    errors: List[str] = []
-
     crawler = BeautifulSoupCrawler(
         max_requests_per_crawl=len(urls),
         request_handler_timeout=timedelta(seconds=settings.crawler_timeout),
     )
 
     @crawler.router.default_handler
-    async def handler(context: BeautifulSoupCrawlingContext) -> None:
+    async def request_handler(context: BeautifulSoupCrawlingContext) -> None:
         start_time = time.time()
-        soup = context.soup
+        context.log.info(f'Processing {context.request.url} ...')
 
         try:
+            soup = context.soup
+
             # Extract title
             title = None
             if soup.title and soup.title.string:
@@ -201,21 +203,56 @@ async def crawl_with_beautifulsoup(urls: List[str]) -> List[CrawledPage]:
 
             crawl_time = int((time.time() - start_time) * 1000)
 
-            page = CrawledPage(
-                url=context.request.url,
-                root_url=extract_root_url(context.request.url),
-                title=title,
-                content=content,
-                meta_description=meta_desc,
-                crawl_time_ms=crawl_time,
-                crawler_used=CrawlerType.BEAUTIFULSOUP,
-            )
-            results.append(page)
+            # Push data to Crawlee's dataset
+            await context.push_data({
+                'url': context.request.url,
+                'root_url': extract_root_url(context.request.url),
+                'title': title,
+                'content': content,
+                'meta_description': meta_desc,
+                'crawl_time_ms': crawl_time,
+                'crawler_used': CrawlerType.BEAUTIFULSOUP.value,
+                'error': None,
+            })
 
         except Exception as e:
-            errors.append(f"{context.request.url}: {str(e)}")
+            crawl_time = int((time.time() - start_time) * 1000)
+            context.log.error(f'Failed to process {context.request.url}: {e}')
 
+            # Push error record to dataset
+            await context.push_data({
+                'url': context.request.url,
+                'root_url': extract_root_url(context.request.url),
+                'title': None,
+                'content': '',
+                'meta_description': None,
+                'crawl_time_ms': crawl_time,
+                'crawler_used': CrawlerType.BEAUTIFULSOUP.value,
+                'error': str(e),
+            })
+
+    # Run the crawler
     await crawler.run(urls)
+
+    # Retrieve data from the dataset
+    dataset = await crawler.get_dataset()
+    data_items = await dataset.get_data()
+
+    # Convert to CrawledPage objects
+    results: List[CrawledPage] = []
+    for item in data_items.items:
+        page = CrawledPage(
+            url=item['url'],
+            root_url=item['root_url'],
+            title=item.get('title'),
+            content=item.get('content', ''),
+            meta_description=item.get('meta_description'),
+            crawl_time_ms=item.get('crawl_time_ms', 0),
+            crawler_used=CrawlerType(item.get('crawler_used', 'beautifulsoup')),
+            error=item.get('error'),
+        )
+        results.append(page)
+
     return results
 
 
@@ -225,8 +262,6 @@ async def crawl_with_playwright(urls: List[str]) -> List[CrawledPage]:
     """Crawl URLs using Playwright (for JavaScript-heavy sites)."""
     from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 
-    results: List[CrawledPage] = []
-
     crawler = PlaywrightCrawler(
         max_requests_per_crawl=len(urls),
         request_handler_timeout=timedelta(seconds=settings.crawler_timeout + 15),
@@ -235,8 +270,9 @@ async def crawl_with_playwright(urls: List[str]) -> List[CrawledPage]:
     )
 
     @crawler.router.default_handler
-    async def handler(context: PlaywrightCrawlingContext) -> None:
+    async def request_handler(context: PlaywrightCrawlingContext) -> None:
         start_time = time.time()
+        context.log.info(f'Processing {context.request.url} ...')
         page = context.page
 
         try:
@@ -288,30 +324,56 @@ async def crawl_with_playwright(urls: List[str]) -> List[CrawledPage]:
 
             crawl_time = int((time.time() - start_time) * 1000)
 
-            crawled_page = CrawledPage(
-                url=context.request.url,
-                root_url=extract_root_url(context.request.url),
-                title=title,
-                content=content,
-                meta_description=meta_desc,
-                crawl_time_ms=crawl_time,
-                crawler_used=CrawlerType.PLAYWRIGHT,
-            )
-            results.append(crawled_page)
+            # Push data to Crawlee's dataset
+            await context.push_data({
+                'url': context.request.url,
+                'root_url': extract_root_url(context.request.url),
+                'title': title,
+                'content': content,
+                'meta_description': meta_desc,
+                'crawl_time_ms': crawl_time,
+                'crawler_used': CrawlerType.PLAYWRIGHT.value,
+                'error': None,
+            })
 
         except Exception as e:
-            # Add page with error
-            crawled_page = CrawledPage(
-                url=context.request.url,
-                root_url=extract_root_url(context.request.url),
-                title=None,
-                content="",
-                error=str(e),
-                crawler_used=CrawlerType.PLAYWRIGHT,
-            )
-            results.append(crawled_page)
+            crawl_time = int((time.time() - start_time) * 1000)
+            context.log.error(f'Failed to process {context.request.url}: {e}')
 
+            # Push error record to dataset
+            await context.push_data({
+                'url': context.request.url,
+                'root_url': extract_root_url(context.request.url),
+                'title': None,
+                'content': '',
+                'meta_description': None,
+                'crawl_time_ms': crawl_time,
+                'crawler_used': CrawlerType.PLAYWRIGHT.value,
+                'error': str(e),
+            })
+
+    # Run the crawler
     await crawler.run(urls)
+
+    # Retrieve data from the dataset
+    dataset = await crawler.get_dataset()
+    data_items = await dataset.get_data()
+
+    # Convert to CrawledPage objects
+    results: List[CrawledPage] = []
+    for item in data_items.items:
+        page = CrawledPage(
+            url=item['url'],
+            root_url=item['root_url'],
+            title=item.get('title'),
+            content=item.get('content', ''),
+            meta_description=item.get('meta_description'),
+            crawl_time_ms=item.get('crawl_time_ms', 0),
+            crawler_used=CrawlerType(item.get('crawler_used', 'playwright')),
+            error=item.get('error'),
+        )
+        results.append(page)
+
     return results
 
 
@@ -360,7 +422,7 @@ async def crawl_urls(
 
             for result in results:
                 if isinstance(result, Exception):
-                    pass  # Log error but continue
+                    logger.error(f"Crawler task failed: {type(result).__name__}: {result}")
                 else:
                     all_pages.extend(result)
 
