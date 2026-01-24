@@ -148,6 +148,11 @@ async def crawl_with_beautifulsoup(urls: List[str]) -> List[CrawledPage]:
     """Crawl URLs using BeautifulSoup (for static HTML)."""
     from crawlee.crawlers import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
 
+    # Collect results directly in a list (more reliable than dataset)
+    results: List[CrawledPage] = []
+
+    logger.info(f"Creating BeautifulSoup crawler for {len(urls)} URLs")
+
     crawler = BeautifulSoupCrawler(
         max_requests_per_crawl=len(urls),
         request_handler_timeout=timedelta(seconds=settings.crawler_timeout),
@@ -156,7 +161,7 @@ async def crawl_with_beautifulsoup(urls: List[str]) -> List[CrawledPage]:
     @crawler.router.default_handler
     async def request_handler(context: BeautifulSoupCrawlingContext) -> None:
         start_time = time.time()
-        context.log.info(f'Processing {context.request.url} ...')
+        logger.info(f'Processing {context.request.url} ...')
 
         try:
             soup = context.soup
@@ -203,55 +208,44 @@ async def crawl_with_beautifulsoup(urls: List[str]) -> List[CrawledPage]:
 
             crawl_time = int((time.time() - start_time) * 1000)
 
-            # Push data to Crawlee's dataset
-            await context.push_data({
-                'url': context.request.url,
-                'root_url': extract_root_url(context.request.url),
-                'title': title,
-                'content': content,
-                'meta_description': meta_desc,
-                'crawl_time_ms': crawl_time,
-                'crawler_used': CrawlerType.BEAUTIFULSOUP.value,
-                'error': None,
-            })
+            # Add directly to results list
+            page = CrawledPage(
+                url=context.request.url,
+                root_url=extract_root_url(context.request.url),
+                title=title,
+                content=content,
+                meta_description=meta_desc,
+                crawl_time_ms=crawl_time,
+                crawler_used=CrawlerType.BEAUTIFULSOUP,
+                error=None,
+            )
+            results.append(page)
+            logger.info(f"Successfully crawled {context.request.url}: {len(content)} chars")
 
         except Exception as e:
             crawl_time = int((time.time() - start_time) * 1000)
-            context.log.error(f'Failed to process {context.request.url}: {e}')
+            logger.error(f'Failed to process {context.request.url}: {e}')
 
-            # Push error record to dataset
-            await context.push_data({
-                'url': context.request.url,
-                'root_url': extract_root_url(context.request.url),
-                'title': None,
-                'content': '',
-                'meta_description': None,
-                'crawl_time_ms': crawl_time,
-                'crawler_used': CrawlerType.BEAUTIFULSOUP.value,
-                'error': str(e),
-            })
+            # Add error record
+            page = CrawledPage(
+                url=context.request.url,
+                root_url=extract_root_url(context.request.url),
+                title=None,
+                content='',
+                meta_description=None,
+                crawl_time_ms=crawl_time,
+                crawler_used=CrawlerType.BEAUTIFULSOUP,
+                error=str(e),
+            )
+            results.append(page)
 
     # Run the crawler
-    await crawler.run(urls)
-
-    # Retrieve data from the dataset
-    dataset = await crawler.get_dataset()
-    data_items = await dataset.get_data()
-
-    # Convert to CrawledPage objects
-    results: List[CrawledPage] = []
-    for item in data_items.items:
-        page = CrawledPage(
-            url=item['url'],
-            root_url=item['root_url'],
-            title=item.get('title'),
-            content=item.get('content', ''),
-            meta_description=item.get('meta_description'),
-            crawl_time_ms=item.get('crawl_time_ms', 0),
-            crawler_used=CrawlerType(item.get('crawler_used', 'beautifulsoup')),
-            error=item.get('error'),
-        )
-        results.append(page)
+    logger.info(f"Running BeautifulSoup crawler for URLs: {urls}")
+    try:
+        await crawler.run(urls)
+        logger.info(f"BeautifulSoup crawler completed with {len(results)} results")
+    except Exception as e:
+        logger.error(f"BeautifulSoup crawler.run() failed: {type(e).__name__}: {e}")
 
     return results
 
@@ -261,6 +255,11 @@ async def crawl_with_beautifulsoup(urls: List[str]) -> List[CrawledPage]:
 async def crawl_with_playwright(urls: List[str]) -> List[CrawledPage]:
     """Crawl URLs using Playwright (for JavaScript-heavy sites)."""
     from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
+
+    # Collect results directly in a list
+    results: List[CrawledPage] = []
+
+    logger.info(f"Creating Playwright crawler for {len(urls)} URLs")
 
     crawler = PlaywrightCrawler(
         max_requests_per_crawl=len(urls),
@@ -272,18 +271,18 @@ async def crawl_with_playwright(urls: List[str]) -> List[CrawledPage]:
     @crawler.router.default_handler
     async def request_handler(context: PlaywrightCrawlingContext) -> None:
         start_time = time.time()
-        context.log.info(f'Processing {context.request.url} ...')
-        page = context.page
+        logger.info(f'Playwright processing {context.request.url} ...')
+        pw_page = context.page
 
         try:
             # Wait for content to load
-            await page.wait_for_load_state("networkidle", timeout=10000)
+            await pw_page.wait_for_load_state("networkidle", timeout=10000)
 
             # Extract title
-            title = await page.title()
+            title = await pw_page.title()
 
             # Extract meta description via JS
-            meta_desc = await page.evaluate("""
+            meta_desc = await pw_page.evaluate("""
                 () => {
                     const meta = document.querySelector('meta[name="description"]') ||
                                 document.querySelector('meta[property="og:description"]');
@@ -292,7 +291,7 @@ async def crawl_with_playwright(urls: List[str]) -> List[CrawledPage]:
             """)
 
             # Extract main content via JS
-            content = await page.evaluate("""
+            content = await pw_page.evaluate("""
                 () => {
                     const main = document.querySelector('main') ||
                                 document.querySelector('article') ||
@@ -324,55 +323,44 @@ async def crawl_with_playwright(urls: List[str]) -> List[CrawledPage]:
 
             crawl_time = int((time.time() - start_time) * 1000)
 
-            # Push data to Crawlee's dataset
-            await context.push_data({
-                'url': context.request.url,
-                'root_url': extract_root_url(context.request.url),
-                'title': title,
-                'content': content,
-                'meta_description': meta_desc,
-                'crawl_time_ms': crawl_time,
-                'crawler_used': CrawlerType.PLAYWRIGHT.value,
-                'error': None,
-            })
+            # Add directly to results list
+            page = CrawledPage(
+                url=context.request.url,
+                root_url=extract_root_url(context.request.url),
+                title=title,
+                content=content,
+                meta_description=meta_desc,
+                crawl_time_ms=crawl_time,
+                crawler_used=CrawlerType.PLAYWRIGHT,
+                error=None,
+            )
+            results.append(page)
+            logger.info(f"Playwright successfully crawled {context.request.url}: {len(content)} chars")
 
         except Exception as e:
             crawl_time = int((time.time() - start_time) * 1000)
-            context.log.error(f'Failed to process {context.request.url}: {e}')
+            logger.error(f'Playwright failed to process {context.request.url}: {e}')
 
-            # Push error record to dataset
-            await context.push_data({
-                'url': context.request.url,
-                'root_url': extract_root_url(context.request.url),
-                'title': None,
-                'content': '',
-                'meta_description': None,
-                'crawl_time_ms': crawl_time,
-                'crawler_used': CrawlerType.PLAYWRIGHT.value,
-                'error': str(e),
-            })
+            # Add error record
+            page = CrawledPage(
+                url=context.request.url,
+                root_url=extract_root_url(context.request.url),
+                title=None,
+                content='',
+                meta_description=None,
+                crawl_time_ms=crawl_time,
+                crawler_used=CrawlerType.PLAYWRIGHT,
+                error=str(e),
+            )
+            results.append(page)
 
     # Run the crawler
-    await crawler.run(urls)
-
-    # Retrieve data from the dataset
-    dataset = await crawler.get_dataset()
-    data_items = await dataset.get_data()
-
-    # Convert to CrawledPage objects
-    results: List[CrawledPage] = []
-    for item in data_items.items:
-        page = CrawledPage(
-            url=item['url'],
-            root_url=item['root_url'],
-            title=item.get('title'),
-            content=item.get('content', ''),
-            meta_description=item.get('meta_description'),
-            crawl_time_ms=item.get('crawl_time_ms', 0),
-            crawler_used=CrawlerType(item.get('crawler_used', 'playwright')),
-            error=item.get('error'),
-        )
-        results.append(page)
+    logger.info(f"Running Playwright crawler for URLs: {urls}")
+    try:
+        await crawler.run(urls)
+        logger.info(f"Playwright crawler completed with {len(results)} results")
+    except Exception as e:
+        logger.error(f"Playwright crawler.run() failed: {type(e).__name__}: {e}")
 
     return results
 
@@ -393,61 +381,109 @@ async def crawl_urls(
     Returns:
         CrawlResult with crawled pages
     """
+    logger.info(f"crawl_urls called with {len(urls)} URLs, crawler_type={crawler_type}")
     start_time = time.time()
     all_pages: List[CrawledPage] = []
 
-    if crawler_type == CrawlerType.AUTO:
-        # Group URLs by detected crawler type
-        bs_urls: List[str] = []
-        pw_urls: List[str] = []
+    try:
+        if crawler_type == CrawlerType.AUTO:
+            # Group URLs by detected crawler type
+            bs_urls: List[str] = []
+            pw_urls: List[str] = []
 
-        detection_tasks = [detect_crawler_type(url) for url in urls]
-        detected_types = await asyncio.gather(*detection_tasks)
+            logger.info("Detecting crawler types for each URL...")
+            detection_tasks = [detect_crawler_type(url) for url in urls]
+            detected_types = await asyncio.gather(*detection_tasks)
 
-        for url, detected in zip(urls, detected_types):
-            if detected == CrawlerType.PLAYWRIGHT:
-                pw_urls.append(url)
-            else:
-                bs_urls.append(url)
-
-        # Crawl in parallel
-        tasks = []
-        if bs_urls:
-            tasks.append(crawl_with_beautifulsoup(bs_urls))
-        if pw_urls:
-            tasks.append(crawl_with_playwright(pw_urls))
-
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.error(f"Crawler task failed: {type(result).__name__}: {result}")
+            for url, detected in zip(urls, detected_types):
+                if detected == CrawlerType.PLAYWRIGHT:
+                    pw_urls.append(url)
                 else:
-                    all_pages.extend(result)
+                    bs_urls.append(url)
 
-    elif crawler_type == CrawlerType.BEAUTIFULSOUP:
-        all_pages = await crawl_with_beautifulsoup(urls)
+            logger.info(f"URL distribution: {len(bs_urls)} BeautifulSoup, {len(pw_urls)} Playwright")
 
-    elif crawler_type == CrawlerType.PLAYWRIGHT:
-        all_pages = await crawl_with_playwright(urls)
+            # Crawl in parallel
+            tasks = []
+            if bs_urls:
+                logger.info(f"Starting BeautifulSoup crawl for {len(bs_urls)} URLs")
+                tasks.append(crawl_with_beautifulsoup(bs_urls))
+            if pw_urls:
+                logger.info(f"Starting Playwright crawl for {len(pw_urls)} URLs")
+                tasks.append(crawl_with_playwright(pw_urls))
 
-    total_time = int((time.time() - start_time) * 1000)
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Count successful vs failed
-    successful = sum(1 for p in all_pages if not p.error and p.content)
-    failed = len(urls) - successful
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Crawler task {i} failed: {type(result).__name__}: {result}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                    else:
+                        logger.info(f"Crawler task {i} returned {len(result)} pages")
+                        all_pages.extend(result)
 
-    return CrawlResult(
-        pages=all_pages,
-        total_pages=len(urls),
-        successful_pages=successful,
-        failed_pages=failed,
-        total_crawl_time_ms=total_time,
-    )
+        elif crawler_type == CrawlerType.BEAUTIFULSOUP:
+            logger.info(f"Using BeautifulSoup crawler for all {len(urls)} URLs")
+            all_pages = await crawl_with_beautifulsoup(urls)
+
+        elif crawler_type == CrawlerType.PLAYWRIGHT:
+            logger.info(f"Using Playwright crawler for all {len(urls)} URLs")
+            all_pages = await crawl_with_playwright(urls)
+
+        total_time = int((time.time() - start_time) * 1000)
+
+        # Count successful vs failed
+        successful = sum(1 for p in all_pages if not p.error and p.content)
+        failed = len(urls) - successful
+
+        logger.info(f"crawl_urls completed: {successful} successful, {failed} failed, {total_time}ms total")
+
+        # Log each page result
+        for page in all_pages:
+            if page.error:
+                logger.warning(f"  Page {page.url}: ERROR - {page.error}")
+            else:
+                logger.info(f"  Page {page.url}: OK - {len(page.content)} chars, title='{page.title}'")
+
+        return CrawlResult(
+            pages=all_pages,
+            total_pages=len(urls),
+            successful_pages=successful,
+            failed_pages=failed,
+            total_crawl_time_ms=total_time,
+        )
+
+    except Exception as e:
+        logger.error(f"crawl_urls failed with exception: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return CrawlResult(
+            pages=[],
+            total_pages=len(urls),
+            successful_pages=0,
+            failed_pages=len(urls),
+            total_crawl_time_ms=int((time.time() - start_time) * 1000),
+        )
 
 
 # === Web Search ===
+
+def _sync_duckduckgo_search(query: str, max_results: int) -> List[str]:
+    """Synchronous DuckDuckGo search helper (runs in thread pool)."""
+    from duckduckgo_search import DDGS
+
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+            urls = [r["href"] for r in results if r.get("href")]
+            logger.info(f"DuckDuckGo returned {len(urls)} URLs for query: {query}")
+            return urls
+    except Exception as e:
+        logger.error(f"DuckDuckGo search failed: {e}")
+        return []
+
 
 async def search_web(
     query: str,
@@ -465,12 +501,19 @@ async def search_web(
     Returns:
         List of URLs to crawl
     """
-    if search_engine == "duckduckgo":
-        from duckduckgo_search import DDGS
+    import concurrent.futures
 
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-            return [r["href"] for r in results if r.get("href")]
+    if search_engine == "duckduckgo":
+        # Run synchronous DuckDuckGo search in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            urls = await loop.run_in_executor(
+                pool,
+                _sync_duckduckgo_search,
+                query,
+                max_results
+            )
+            return urls
 
     raise ValueError(f"Search engine '{search_engine}' not implemented")
 
@@ -487,8 +530,30 @@ async def search_and_crawl(
     Returns:
         Tuple of (CrawlResult, search_urls)
     """
-    urls = await search_web(query, max_results, search_engine)
-    if not urls:
+    logger.info(f"Starting search_and_crawl for query: '{query}'")
+
+    try:
+        urls = await search_web(query, max_results, search_engine)
+        logger.info(f"Search returned {len(urls)} URLs: {urls}")
+
+        if not urls:
+            logger.warning(f"No URLs found for query: '{query}'")
+            return CrawlResult(
+                pages=[],
+                total_pages=0,
+                successful_pages=0,
+                failed_pages=0,
+                total_crawl_time_ms=0,
+            ), []
+
+        logger.info(f"Starting crawl of {len(urls)} URLs with crawler_type={crawler_type}")
+        result = await crawl_urls(urls, crawler_type)
+        logger.info(f"Crawl completed: {result.successful_pages}/{result.total_pages} successful")
+
+        return result, urls
+
+    except Exception as e:
+        logger.error(f"search_and_crawl failed: {type(e).__name__}: {e}")
         return CrawlResult(
             pages=[],
             total_pages=0,
@@ -496,9 +561,6 @@ async def search_and_crawl(
             failed_pages=0,
             total_crawl_time_ms=0,
         ), []
-
-    result = await crawl_urls(urls, crawler_type)
-    return result, urls
 
 
 # === Citation Generation ===
