@@ -128,7 +128,8 @@ class WebChatResponse(BaseModel):
 
 class StreamChunk(BaseModel):
     """Streaming response chunk."""
-    type: Literal["content", "citation", "done", "error"]
+    type: Literal["content", "citation", "status", "done", "error"]
     content: Optional[str] = None
     citation: Optional[Citation] = None
+    status: Optional[str] = None  # "searching", "reading", "generating"
     error: Optional[str] = None

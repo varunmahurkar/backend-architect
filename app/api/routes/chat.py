@@ -46,6 +46,15 @@ CRITICAL CITATION RULES - YOU MUST FOLLOW THESE:
 5. ALWAYS cite when using information from the provided sources
 6. Only omit citations for general knowledge not from sources
 
+FORMATTING RULES - Use rich markdown formatting:
+- Use **bold** for emphasis and *italic* for subtle emphasis
+- Use `code` for inline code, commands, or technical terms
+- Use ```language for code blocks with language specification (e.g., ```python, ```javascript)
+- Structure long answers with ## headers for sections
+- Use bullet points (-) or numbered lists (1.) for lists of items
+- Use > for blockquotes when quoting from sources
+- Use tables when comparing multiple items
+
 Example with sources:
 If sources include "Domain for citation: openai.com" and "Domain for citation: techcrunch.com"
 
@@ -195,20 +204,30 @@ async def chat_stream_endpoint(
     Returns Server-Sent Events (SSE) stream.
 
     When web_search_enabled=true or urls are provided:
-    - type: "citation" - Citation data (sent first)
+    - type: "status" - Progress phase (searching, reading, generating)
+    - type: "citation" - Citation data (sent after reading)
     - type: "content" - Response text chunks
     - type: "done" - Stream complete
     - type: "error" - Error occurred
     """
     async def generate() -> AsyncGenerator[str, None]:
+        web_mode = request.web_search_enabled or (request.urls and len(request.urls) > 0)
         try:
             crawl_result = None
 
             # Crawl phase
             if request.urls and len(request.urls) > 0:
+                # Send "reading" status for explicit URLs
+                status_chunk = StreamChunk(type="status", status="reading")
+                yield f"data: {status_chunk.model_dump_json()}\n\n"
+
                 logger.info(f"Crawling explicit URLs: {request.urls}")
                 crawl_result = await crawl_urls(request.urls, request.crawler_type)
             elif request.web_search_enabled:
+                # Send "searching" status
+                status_chunk = StreamChunk(type="status", status="searching")
+                yield f"data: {status_chunk.model_dump_json()}\n\n"
+
                 logger.info(f"Web search enabled, searching for: {request.message}")
                 crawl_result, search_urls = await search_and_crawl(
                     query=request.message,
@@ -216,6 +235,11 @@ async def chat_stream_endpoint(
                     crawler_type=request.crawler_type,
                 )
                 logger.info(f"Search returned {len(search_urls)} URLs")
+
+                # Send "reading" status after search completes
+                if search_urls:
+                    status_chunk = StreamChunk(type="status", status="reading")
+                    yield f"data: {status_chunk.model_dump_json()}\n\n"
 
             # Send citations first and build context
             citations = []
@@ -250,6 +274,11 @@ async def chat_stream_endpoint(
                     for msg in request.chat_history
                 ]
 
+            # Send "generating" status before LLM streaming starts
+            if web_mode:
+                status_chunk = StreamChunk(type="status", status="generating")
+                yield f"data: {status_chunk.model_dump_json()}\n\n"
+
             # Stream LLM response
             async for text_chunk in chat_stream(
                 message=request.message,
@@ -258,21 +287,21 @@ async def chat_stream_endpoint(
                 system_prompt=system_prompt,
             ):
                 # Use StreamChunk format if web search was used, otherwise plain text
-                if crawl_result:
+                if web_mode:
                     chunk = StreamChunk(type="content", content=text_chunk)
                     yield f"data: {chunk.model_dump_json()}\n\n"
                 else:
                     yield f"data: {text_chunk}\n\n"
 
             # Signal completion
-            if crawl_result:
+            if web_mode:
                 done_chunk = StreamChunk(type="done")
                 yield f"data: {done_chunk.model_dump_json()}\n\n"
             else:
                 yield "data: [DONE]\n\n"
 
         except Exception as e:
-            if crawl_result:
+            if web_mode:
                 error_chunk = StreamChunk(type="error", error=str(e))
                 yield f"data: {error_chunk.model_dump_json()}\n\n"
             else:

@@ -472,7 +472,7 @@ async def crawl_urls(
 
 def _sync_duckduckgo_search(query: str, max_results: int) -> List[str]:
     """Synchronous DuckDuckGo search helper (runs in thread pool)."""
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 
     try:
         with DDGS() as ddgs:
@@ -482,6 +482,8 @@ def _sync_duckduckgo_search(query: str, max_results: int) -> List[str]:
             return urls
     except Exception as e:
         logger.error(f"DuckDuckGo search failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 
