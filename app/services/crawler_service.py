@@ -487,6 +487,65 @@ def _sync_duckduckgo_search(query: str, max_results: int) -> List[str]:
         return []
 
 
+def _sync_duckduckgo_search_full(query: str, max_results: int) -> List[dict]:
+    """
+    Synchronous DuckDuckGo search that returns full results with snippets.
+    Returns list of dicts with: url, title, snippet
+    """
+    from ddgs import DDGS
+
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+            search_results = []
+            for r in results:
+                if r.get("href"):
+                    search_results.append({
+                        "url": r.get("href", ""),
+                        "title": r.get("title", ""),
+                        "snippet": r.get("body", ""),
+                    })
+            logger.info(f"DuckDuckGo returned {len(search_results)} full results for query: {query}")
+            return search_results
+    except Exception as e:
+        logger.error(f"DuckDuckGo search failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return []
+
+
+async def agentic_search(
+    query: str,
+    max_results: int = 25,
+    search_engine: str = "duckduckgo",
+) -> List[dict]:
+    """
+    Agentic search - returns search results with snippets for LLM consumption.
+
+    Args:
+        query: Search query
+        max_results: Maximum number of results (default 25)
+        search_engine: Which search engine to use
+
+    Returns:
+        List of search results with url, title, snippet
+    """
+    import concurrent.futures
+
+    if search_engine == "duckduckgo":
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            results = await loop.run_in_executor(
+                pool,
+                _sync_duckduckgo_search_full,
+                query,
+                max_results
+            )
+            return results
+
+    raise ValueError(f"Search engine '{search_engine}' not implemented")
+
+
 async def search_web(
     query: str,
     max_results: int = 5,

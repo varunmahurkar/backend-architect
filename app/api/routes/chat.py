@@ -29,6 +29,7 @@ from app.services.crawler_service import (
     search_and_crawl,
     generate_citations,
     build_context_for_llm,
+    agentic_search,
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -36,6 +37,41 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 # === Citation System Prompt ===
 
+AGENTIC_SEARCH_PROMPT = """You are Nurav AI, an intelligent search assistant. You have access to web search results to answer user questions accurately.
+
+## YOUR TASK
+Analyze the search results provided and give a comprehensive, well-researched answer to the user's question.
+
+## CITATION RULES - MANDATORY
+1. Add inline citations using this EXACT format: 【domain.com】 (use the special brackets 【 and 】)
+2. Extract the domain from each source URL (e.g., from "https://www.wikipedia.org/wiki/..." use 【wikipedia.org】)
+3. Place citations IMMEDIATELY after any fact, claim, or information from a source
+4. You can cite multiple sources for one fact: "This is true 【source1.com】【source2.com】"
+5. ONLY cite when the information comes from the provided search results
+6. Do NOT add citations for your own reasoning or general knowledge
+
+## FORMATTING RULES
+- Use **bold** for key terms and emphasis
+- Use `code` for technical terms, commands, or code snippets
+- Use ```language for code blocks
+- Structure answers with ## headers for different sections
+- Use bullet points (-) or numbered lists (1.) for lists
+- Use > blockquotes when directly quoting sources
+- Keep responses well-organized and easy to read
+
+## EXAMPLE
+Given a source with URL "https://docs.python.org/3/tutorial/..." and snippet about Python lists:
+
+Your response: "Python lists are mutable sequences 【docs.python.org】. They can contain items of different types and support operations like append and extend 【docs.python.org】."
+
+## IMPORTANT
+- Use 【 and 】 brackets (special Unicode characters, NOT regular brackets [ ])
+- Be comprehensive but concise
+- Synthesize information from multiple sources when relevant
+- If search results don't contain enough information, say so honestly"""
+
+
+# Legacy prompt for RAG approach (kept for backwards compatibility)
 CITATION_SYSTEM_PROMPT = """You are Nurav AI, a helpful assistant with access to web search results.
 
 CRITICAL CITATION RULES - YOU MUST FOLLOW THESE:
@@ -193,78 +229,93 @@ async def chat_completions(
         )
 
 
+def _extract_domain(url: str) -> str:
+    """Extract domain from URL for citations."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        domain = parsed.netloc.replace("www.", "")
+        return domain
+    except:
+        return url
+
+
+def _build_search_context(search_results: List[dict]) -> str:
+    """Build context string from search results for LLM."""
+    context_parts = []
+    for i, result in enumerate(search_results, 1):
+        domain = _extract_domain(result.get("url", ""))
+        context_parts.append(f"""
+Source [{i}]:
+- URL: {result.get("url", "")}
+- Domain for citation: {domain}
+- Title: {result.get("title", "")}
+- Content: {result.get("snippet", "")}
+""")
+    return "\n".join(context_parts)
+
+
 @router.post("/stream")
 async def chat_stream_endpoint(
     request: ChatRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
     """
-    Stream a response from the LLM.
+    Stream a response from the LLM with agentic web search.
 
     Returns Server-Sent Events (SSE) stream.
 
-    When web_search_enabled=true or urls are provided:
-    - type: "status" - Progress phase (searching, reading, generating)
-    - type: "citation" - Citation data (sent after reading)
+    When web_search_enabled=true:
+    - type: "status" - Progress phase (searching, generating)
+    - type: "citation" - Citation data from search results
     - type: "content" - Response text chunks
     - type: "done" - Stream complete
     - type: "error" - Error occurred
     """
     async def generate() -> AsyncGenerator[str, None]:
-        web_mode = request.web_search_enabled or (request.urls and len(request.urls) > 0)
+        web_mode = request.web_search_enabled
         try:
-            crawl_result = None
+            search_results = []
+            citations = []
+            system_prompt = request.system_prompt
 
-            # Crawl phase
-            if request.urls and len(request.urls) > 0:
-                # Send "reading" status for explicit URLs
-                status_chunk = StreamChunk(type="status", status="reading")
-                yield f"data: {status_chunk.model_dump_json()}\n\n"
-
-                logger.info(f"Crawling explicit URLs: {request.urls}")
-                crawl_result = await crawl_urls(request.urls, request.crawler_type)
-            elif request.web_search_enabled:
+            # Agentic search phase
+            if request.web_search_enabled:
                 # Send "searching" status
                 status_chunk = StreamChunk(type="status", status="searching")
                 yield f"data: {status_chunk.model_dump_json()}\n\n"
 
-                logger.info(f"Web search enabled, searching for: {request.message}")
-                crawl_result, search_urls = await search_and_crawl(
+                logger.info(f"Agentic search for: {request.message}")
+                search_results = await agentic_search(
                     query=request.message,
-                    max_results=5,
-                    crawler_type=request.crawler_type,
+                    max_results=20,  # Get top 20 results
                 )
-                logger.info(f"Search returned {len(search_urls)} URLs")
+                logger.info(f"Search returned {len(search_results)} results")
 
-                # Send "reading" status after search completes
-                if search_urls:
-                    status_chunk = StreamChunk(type="status", status="reading")
-                    yield f"data: {status_chunk.model_dump_json()}\n\n"
+                # Generate citations from search results
+                for i, result in enumerate(search_results, 1):
+                    domain = _extract_domain(result.get("url", ""))
+                    citation = Citation(
+                        id=i,
+                        url=result.get("url", ""),
+                        root_url=f"https://{domain}",
+                        title=result.get("title", ""),
+                        snippet=result.get("snippet", ""),
+                    )
+                    citations.append(citation)
 
-            # Send citations first and build context
-            citations = []
-            system_prompt = request.system_prompt
-
-            if crawl_result:
-                logger.info(f"Crawl result: {crawl_result.total_pages} pages, {crawl_result.successful_pages} successful")
-                for page in crawl_result.pages:
-                    logger.info(f"  Page: {page.url}, content length: {len(page.content)}, error: {page.error}")
-
-            if crawl_result and crawl_result.pages:
-                citations = generate_citations(crawl_result.pages)
-                logger.info(f"Generated {len(citations)} citations")
-
-                # Send each citation as SSE event
-                for citation in citations:
+                    # Send citation event
                     chunk = StreamChunk(type="citation", citation=citation)
                     yield f"data: {chunk.model_dump_json()}\n\n"
 
-                # Build context for LLM
-                context = build_context_for_llm(crawl_result.pages, citations)
-                base_prompt = CITATION_SYSTEM_PROMPT
+                logger.info(f"Sent {len(citations)} citations")
+
+                # Build context for LLM from search snippets
+                context = _build_search_context(search_results)
+                base_prompt = AGENTIC_SEARCH_PROMPT
                 if request.system_prompt:
-                    base_prompt = f"{CITATION_SYSTEM_PROMPT}\n\nAdditional instructions: {request.system_prompt}"
-                system_prompt = f"{base_prompt}\n\n--- WEB SOURCES ---\n{context}\n--- END SOURCES ---"
+                    base_prompt = f"{AGENTIC_SEARCH_PROMPT}\n\nAdditional instructions: {request.system_prompt}"
+                system_prompt = f"{base_prompt}\n\n--- SEARCH RESULTS ---\n{context}\n--- END SEARCH RESULTS ---"
 
             # Convert chat history
             history = None
@@ -280,18 +331,24 @@ async def chat_stream_endpoint(
                 yield f"data: {status_chunk.model_dump_json()}\n\n"
 
             # Stream LLM response
+            logger.info(f"Starting LLM stream with provider: {request.provider}")
+            chunk_count = 0
             async for text_chunk in chat_stream(
                 message=request.message,
                 provider=request.provider,
                 chat_history=history,
                 system_prompt=system_prompt,
             ):
+                chunk_count += 1
+                if chunk_count <= 3:  # Log first few chunks for debugging
+                    logger.info(f"LLM chunk {chunk_count}: {text_chunk[:100] if text_chunk else 'empty'}...")
                 # Use StreamChunk format if web search was used, otherwise plain text
                 if web_mode:
                     chunk = StreamChunk(type="content", content=text_chunk)
                     yield f"data: {chunk.model_dump_json()}\n\n"
                 else:
                     yield f"data: {text_chunk}\n\n"
+            logger.info(f"LLM stream completed with {chunk_count} chunks")
 
             # Signal completion
             if web_mode:
@@ -301,6 +358,9 @@ async def chat_stream_endpoint(
                 yield "data: [DONE]\n\n"
 
         except Exception as e:
+            import traceback
+            logger.error(f"Stream error: {e}")
+            logger.error(traceback.format_exc())
             if web_mode:
                 error_chunk = StreamChunk(type="error", error=str(e))
                 yield f"data: {error_chunk.model_dump_json()}\n\n"
