@@ -1,13 +1,16 @@
 """
 Chat API routes for LLM interactions.
 Supports multiple providers with streaming responses.
+Includes agentic workflow endpoints for adaptive query processing.
 """
 
+import json
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, List, AsyncGenerator
+from typing import Optional, Literal, List, AsyncGenerator, Dict
 from app.api.dependencies.auth import get_current_user, get_optional_user, TokenPayload
 
 logger = logging.getLogger(__name__)
@@ -119,6 +122,8 @@ class ChatRequest(BaseModel):
     web_search_enabled: bool = Field(default=False, description="Enable Perplexity-style search")
     urls: Optional[List[str]] = Field(None, max_length=10, description="Explicit URLs to crawl")
     crawler_type: CrawlerType = Field(default=CrawlerType.AUTO, description="auto, beautifulsoup, or playwright")
+    # Agentic mode options
+    mode: Optional[Literal["simple", "research", "deep"]] = Field(None, description="Confirmed query mode")
 
 
 class ChatResponse(BaseModel):
@@ -397,3 +402,199 @@ async def list_providers():
         }])
 
     return ProvidersResponse(providers=providers)
+
+
+# =============================================================================
+# Agentic Workflow Endpoints
+# =============================================================================
+
+
+class ModeSuggestionResponse(BaseModel):
+    """Response for query mode suggestion."""
+    suggested_mode: Literal["simple", "research", "deep"]
+    reasoning: str
+    estimated_time: str
+    intent: str
+    sources: List[str]
+
+
+@router.post("/suggest-mode", response_model=ModeSuggestionResponse)
+async def suggest_query_mode(
+    request: ChatRequest,
+    current_user: Optional[TokenPayload] = Depends(get_optional_user),
+):
+    """
+    Analyze a query and suggest the optimal processing mode.
+    Returns suggested complexity level, reasoning, and estimated time.
+    Used for hybrid mode triggering (AI suggests, user confirms).
+    """
+    try:
+        from app.services.agents.nodes.analyzer import analyze_query_node
+
+        state = {
+            "query": request.message,
+            "messages": [],
+        }
+        analyzed = await analyze_query_node(state)
+
+        complexity = analyzed.get("query_complexity", "simple")
+        intent = analyzed.get("query_intent", "factual")
+        sources = analyzed.get("requires_sources", ["web"])
+
+        time_estimates = {
+            "simple": "< 5 seconds",
+            "research": "5-15 seconds",
+            "deep": "15-30 seconds",
+        }
+
+        reasoning_parts = [f"Detected intent: {intent}"]
+        if "arxiv" in sources:
+            reasoning_parts.append("academic sources recommended")
+        if "youtube" in sources:
+            reasoning_parts.append("video content may help")
+        if complexity == "research":
+            reasoning_parts.append("multiple sources needed for comprehensive answer")
+        elif complexity == "deep":
+            reasoning_parts.append("complex topic requiring in-depth analysis")
+
+        return ModeSuggestionResponse(
+            suggested_mode=complexity,
+            reasoning=". ".join(reasoning_parts),
+            estimated_time=time_estimates.get(complexity, "< 5 seconds"),
+            intent=intent,
+            sources=sources,
+        )
+
+    except Exception as e:
+        logger.error(f"Mode suggestion failed: {e}")
+        return ModeSuggestionResponse(
+            suggested_mode="simple",
+            reasoning="Defaulting to simple mode",
+            estimated_time="< 5 seconds",
+            intent="factual",
+            sources=["web"],
+        )
+
+
+@router.post("/agentic-stream")
+async def agentic_chat_stream(
+    request: ChatRequest,
+    current_user: Optional[TokenPayload] = Depends(get_optional_user),
+):
+    """
+    Stream a response using the agentic workflow.
+    Processes the query through: analysis -> search -> RAG -> synthesis.
+
+    SSE event types:
+    - type: "status" - Processing phase update (analyzing, searching, retrieving, synthesizing)
+    - type: "citation" - Citation data from search results
+    - type: "content" - Response text chunk
+    - type: "mode" - Detected/confirmed query mode
+    - type: "done" - Stream complete
+    - type: "error" - Error occurred
+    """
+    async def generate() -> AsyncGenerator[str, None]:
+        try:
+            from app.services.agents.graph import get_agent_graph
+
+            graph = get_agent_graph()
+
+            # Build initial state
+            initial_state = {
+                "query": request.message,
+                "user_id": current_user.sub if current_user else None,
+                "mode": request.mode,  # None if not user-confirmed
+                "messages": [],
+                "web_results": [],
+                "academic_results": [],
+                "youtube_results": [],
+                "rag_context": [],
+                "citations": [],
+                "synthesized_response": None,
+                "current_phase": "analyzing",
+                "provider": request.provider or "google",
+                "chat_history": [
+                    {"role": msg.role, "content": msg.content}
+                    for msg in (request.chat_history or [])
+                ],
+                "system_prompt": request.system_prompt,
+                "start_time": datetime.now(timezone.utc).isoformat(),
+                "errors": [],
+            }
+
+            # Send initial status
+            yield _sse_event("status", {"status": "analyzing"})
+
+            # Stream through the graph
+            config = {"configurable": {"thread_id": f"agentic_{datetime.now(timezone.utc).timestamp()}"}}
+            prev_phase = "analyzing"
+            citations_sent = set()
+
+            async for event in graph.astream(initial_state, config=config):
+                # event is a dict of node outputs keyed by node name
+                for node_name, node_output in event.items():
+                    if not isinstance(node_output, dict):
+                        continue
+
+                    # Send phase updates
+                    phase = node_output.get("current_phase", "")
+                    if phase and phase != prev_phase:
+                        phase_labels = {
+                            "analyzed": "searching",
+                            "searched": "retrieving",
+                            "retrieved": "synthesizing",
+                            "synthesized": "generating",
+                        }
+                        display_phase = phase_labels.get(phase, phase)
+                        yield _sse_event("status", {"status": display_phase})
+                        prev_phase = phase
+
+                    # Send mode detection result
+                    if "query_complexity" in node_output:
+                        yield _sse_event("mode", {
+                            "mode": node_output.get("mode", node_output["query_complexity"]),
+                            "intent": node_output.get("query_intent", ""),
+                            "sources": node_output.get("requires_sources", []),
+                        })
+
+                    # Send citations as they're discovered
+                    citations = node_output.get("citations", [])
+                    for citation in citations:
+                        cit_id = citation.get("id")
+                        if cit_id and cit_id not in citations_sent:
+                            citations_sent.add(cit_id)
+                            yield _sse_event("citation", {"citation": citation})
+
+                    # Stream synthesized response
+                    response_text = node_output.get("synthesized_response")
+                    if response_text:
+                        # Stream in chunks for progressive rendering
+                        chunk_size = 50
+                        for i in range(0, len(response_text), chunk_size):
+                            chunk = response_text[i:i + chunk_size]
+                            yield _sse_event("content", {"content": chunk})
+
+            # Signal completion
+            yield _sse_event("done", {})
+
+        except Exception as e:
+            import traceback
+            logger.error(f"Agentic stream error: {e}")
+            logger.error(traceback.format_exc())
+            yield _sse_event("error", {"error": str(e)})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse_event(event_type: str, data: dict) -> str:
+    """Format a Server-Sent Event with type field."""
+    payload = {"type": event_type, **data}
+    return f"data: {json.dumps(payload)}\n\n"

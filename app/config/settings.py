@@ -66,6 +66,19 @@ class Settings(BaseSettings):
     playwright_headless: bool = True
     playwright_browser: str = "chromium"
 
+    # Vector Databases - Pinecone (Academic Papers)
+    pinecone_api_key: Optional[str] = None
+    pinecone_environment: str = "us-east1-gcp"
+    pinecone_academic_index: str = "nurav-academic-papers"
+
+    # YouTube Data API
+    youtube_api_key: Optional[str] = None
+
+    # Agentic Query Timeouts (seconds)
+    query_timeout_simple: int = 5
+    query_timeout_research: int = 15
+    query_timeout_deep: int = 30
+
     def get_llm_config(self, provider: str) -> dict:
         """Get configuration for a specific LLM provider."""
         configs = {

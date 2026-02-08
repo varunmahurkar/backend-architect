@@ -24,3 +24,14 @@ duckduckgo-search>=4.0.0
 
 # HTTP Client (async)
 httpx>=0.25.0
+
+# Vector Stores
+pinecone-client>=5.0.0
+pgvector>=0.3.6
+
+# Academic Sources
+arxiv>=2.1.0
+
+# YouTube
+youtube-transcript-api>=0.6.2
+google-api-python-client>=2.147.0
