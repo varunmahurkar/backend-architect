@@ -30,7 +30,7 @@ pinecone-client>=5.0.0
 pgvector>=0.3.6
 
 # Academic Sources
-arxiv>=2.1.0
+#arxiv>=2.1.0
 
 # YouTube
 youtube-transcript-api>=0.6.2
