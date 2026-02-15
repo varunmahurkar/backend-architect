@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # YouTube Data API
     youtube_api_key: Optional[str] = None
 
+    # Agentic Model Overrides (cost-efficient models for internal operations)
+    classifier_provider: str = "openai"
+    classifier_model: str = "gpt-4o-mini"
+    synthesizer_provider: str = "openai"
+    synthesizer_model: str = "gpt-4o-mini"
+
     # Agentic Query Timeouts (seconds)
     query_timeout_simple: int = 5
     query_timeout_research: int = 15
