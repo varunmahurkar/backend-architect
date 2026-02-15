@@ -14,10 +14,12 @@ from typing import Optional, Literal, List, AsyncGenerator, Dict
 from app.api.dependencies.auth import get_current_user, get_optional_user, TokenPayload
 
 logger = logging.getLogger(__name__)
+from app.config.settings import settings
 from app.services.llm_service import (
     chat,
     chat_stream,
     get_available_providers,
+    get_llm,
     LLMProvider,
 )
 from app.api.models.crawler import (
@@ -114,7 +116,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     """Chat request payload."""
     message: str = Field(..., min_length=1, max_length=10000)
-    provider: Optional[LLMProvider] = "google"
+    provider: Optional[LLMProvider] = None
     chat_history: Optional[list[ChatMessage]] = None
     system_prompt: Optional[str] = None
     stream: bool = False
@@ -124,6 +126,8 @@ class ChatRequest(BaseModel):
     crawler_type: CrawlerType = Field(default=CrawlerType.AUTO, description="auto, beautifulsoup, or playwright")
     # Agentic mode options
     mode: Optional[Literal["simple", "research", "deep"]] = Field(None, description="Confirmed query mode")
+    # Conversation persistence
+    conversation_id: Optional[str] = Field(None, description="Existing conversation ID to append to")
 
 
 class ChatResponse(BaseModel):
@@ -216,7 +220,7 @@ async def chat_completions(
         return ChatResponse(
             success=True,
             message=response,
-            provider=request.provider or "google",
+            provider=request.provider or settings.default_llm_provider,
             citations=citations,
             trigger_mode=trigger_mode,
             search_query=search_query,
@@ -495,9 +499,29 @@ async def agentic_chat_stream(
     """
     async def generate() -> AsyncGenerator[str, None]:
         try:
+            import time
+            from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
             from app.services.agents.graph import get_agent_graph
+            from app.services.cache import response_cache
 
             graph = get_agent_graph()
+            start_time = time.monotonic()
+            query_mode = request.mode or "simple"
+
+            # Check cache first
+            cached = response_cache.get(request.message, query_mode)
+            if cached:
+                yield _sse_event("status", {"status": "cached"})
+                # Stream cached citations
+                for citation in cached.get("citations", []):
+                    yield _sse_event("citation", {"citation": citation})
+                # Stream cached response in chunks for progressive rendering
+                cached_response = cached["response"]
+                chunk_size = 80
+                for i in range(0, len(cached_response), chunk_size):
+                    yield _sse_event("content", {"content": cached_response[i:i + chunk_size]})
+                yield _sse_event("done", {})
+                return
 
             # Build initial state
             initial_state = {
@@ -511,8 +535,10 @@ async def agentic_chat_stream(
                 "rag_context": [],
                 "citations": [],
                 "synthesized_response": None,
+                "synthesis_system_prompt": None,
+                "synthesis_messages": None,
                 "current_phase": "analyzing",
-                "provider": request.provider or "google",
+                "provider": request.provider or settings.synthesizer_provider,
                 "chat_history": [
                     {"role": msg.role, "content": msg.content}
                     for msg in (request.chat_history or [])
@@ -525,16 +551,19 @@ async def agentic_chat_stream(
             # Send initial status
             yield _sse_event("status", {"status": "analyzing"})
 
-            # Stream through the graph
+            # Stream through the graph (analysis -> search -> RAG -> prepare_synthesis)
             config = {"configurable": {"thread_id": f"agentic_{datetime.now(timezone.utc).timestamp()}"}}
             prev_phase = "analyzing"
             citations_sent = set()
+            final_state = {}
 
             async for event in graph.astream(initial_state, config=config):
-                # event is a dict of node outputs keyed by node name
                 for node_name, node_output in event.items():
                     if not isinstance(node_output, dict):
                         continue
+
+                    # Accumulate final state
+                    final_state.update(node_output)
 
                     # Send phase updates
                     phase = node_output.get("current_phase", "")
@@ -565,14 +594,92 @@ async def agentic_chat_stream(
                             citations_sent.add(cit_id)
                             yield _sse_event("citation", {"citation": citation})
 
-                    # Stream synthesized response
-                    response_text = node_output.get("synthesized_response")
-                    if response_text:
-                        # Stream in chunks for progressive rendering
-                        chunk_size = 50
-                        for i in range(0, len(response_text), chunk_size):
-                            chunk = response_text[i:i + chunk_size]
-                            yield _sse_event("content", {"content": chunk})
+            # Real token-by-token LLM streaming using prepared synthesis messages
+            synthesis_messages = final_state.get("synthesis_messages")
+            if synthesis_messages:
+                yield _sse_event("status", {"status": "generating"})
+
+                # Convert dict messages to LangChain message objects
+                lc_messages = []
+                for msg in synthesis_messages:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if role == "system":
+                        lc_messages.append(SystemMessage(content=content))
+                    elif role == "user":
+                        lc_messages.append(HumanMessage(content=content))
+                    elif role == "assistant":
+                        lc_messages.append(AIMessage(content=content))
+
+                # Stream from LLM token-by-token
+                llm = get_llm(
+                    settings.synthesizer_provider,
+                    streaming=True,
+                    model_override=settings.synthesizer_model,
+                )
+                full_response = ""
+                async for chunk in llm.astream(lc_messages):
+                    token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                    if token:
+                        full_response += token
+                        yield _sse_event("content", {"content": token})
+
+                # Store response in cache and final state
+                final_state["synthesized_response"] = full_response
+                response_cache.put(
+                    request.message,
+                    query_mode,
+                    full_response,
+                    final_state.get("citations", []),
+                )
+            else:
+                # Fallback: no synthesis prepared (shouldn't happen normally)
+                logger.warning("No synthesis messages in final state")
+
+            elapsed = time.monotonic() - start_time
+            logger.info(f"Agentic stream completed in {elapsed:.2f}s")
+
+            # Auto-save messages to conversation if user is authenticated
+            if current_user and request.conversation_id and final_state.get("synthesized_response"):
+                try:
+                    from app.services import conversation_service
+                    await conversation_service.add_messages(
+                        conversation_id=request.conversation_id,
+                        user_id=current_user.sub,
+                        messages=[
+                            {"role": "user", "content": request.message},
+                            {
+                                "role": "assistant",
+                                "content": final_state["synthesized_response"],
+                                "citations": final_state.get("citations", []),
+                            },
+                        ],
+                    )
+                except Exception as save_err:
+                    logger.warning(f"Failed to save messages: {save_err}")
+
+            # Run quality validation in background (non-blocking, log only)
+            if final_state.get("synthesized_response"):
+                try:
+                    from app.services.agents.validators import validate_response
+                    # Fire-and-forget: don't await, just log result
+                    import asyncio
+                    asyncio.create_task(validate_response(request.message, final_state["synthesized_response"]))
+                except Exception as val_err:
+                    logger.debug(f"Validation setup failed: {val_err}")
+
+            # Generate follow-up questions (non-blocking, skip on failure)
+            if final_state.get("synthesized_response"):
+                try:
+                    from app.services.agents.nodes.followup import generate_followup_questions
+                    followups = await generate_followup_questions(
+                        request.message,
+                        final_state["synthesized_response"],
+                    )
+                    if followups:
+                        yield _sse_event("followup", {"questions": followups})
+                except Exception as followup_err:
+                    logger.warning(f"Follow-up generation failed: {followup_err}")
 
             # Signal completion
             yield _sse_event("done", {})
