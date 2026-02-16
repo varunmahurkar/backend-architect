@@ -13,18 +13,19 @@ from app.config.settings import settings
 LLMProvider = Literal["google", "openai", "anthropic"]
 
 
-def get_llm(provider: Optional[LLMProvider] = None, streaming: bool = False):
+def get_llm(provider: Optional[LLMProvider] = None, streaming: bool = False, model_override: Optional[str] = None):
     """
     Get LLM instance based on provider.
 
     Args:
-        provider: LLM provider (google, openai, anthropic). Defaults to google.
+        provider: LLM provider (google, openai, anthropic). Defaults to settings default.
         streaming: Enable streaming responses.
+        model_override: Override the default model for this provider (e.g. "gpt-4o-mini").
 
     Returns:
         LangChain LLM instance
     """
-    provider = provider or "google"
+    provider = provider or settings.default_llm_provider
 
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -33,7 +34,7 @@ def get_llm(provider: Optional[LLMProvider] = None, streaming: bool = False):
             raise ValueError("GOOGLE_API_KEY not configured")
 
         return ChatGoogleGenerativeAI(
-            model=settings.google_model,
+            model=model_override or settings.google_model,
             google_api_key=settings.google_api_key,
             temperature=settings.google_temperature,
             max_output_tokens=settings.google_max_tokens,
@@ -47,7 +48,7 @@ def get_llm(provider: Optional[LLMProvider] = None, streaming: bool = False):
             raise ValueError("OPENAI_API_KEY not configured")
 
         return ChatOpenAI(
-            model=settings.openai_model,
+            model=model_override or settings.openai_model,
             api_key=settings.openai_api_key,
             temperature=settings.openai_temperature,
             max_tokens=settings.openai_max_tokens,
@@ -61,7 +62,7 @@ def get_llm(provider: Optional[LLMProvider] = None, streaming: bool = False):
             raise ValueError("ANTHROPIC_API_KEY not configured")
 
         return ChatAnthropic(
-            model=settings.anthropic_model,
+            model=model_override or settings.anthropic_model,
             api_key=settings.anthropic_api_key,
             temperature=settings.anthropic_temperature,
             max_tokens=settings.anthropic_max_tokens,
