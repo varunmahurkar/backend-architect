@@ -85,6 +85,10 @@ class AgentState(TypedDict, total=False):
     citations: List[CitationEntry]
     synthesized_response: Optional[str]
 
+    # Synthesis preparation (prompt built in graph, LLM streaming in endpoint)
+    synthesis_system_prompt: Optional[str]
+    synthesis_messages: Optional[List[Dict]]
+
     # Processing metadata
     current_phase: str
     provider: Optional[str]

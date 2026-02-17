@@ -11,7 +11,7 @@ from app.services.agents.state import AgentState
 from app.services.agents.nodes.analyzer import analyze_query_node
 from app.services.agents.nodes.searcher import simple_search_node, research_search_node
 from app.services.agents.nodes.retriever import rag_retrieval_node
-from app.services.agents.nodes.synthesizer import synthesize_response_node
+from app.services.agents.nodes.synthesizer import prepare_synthesis_node
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def create_agent_graph():
     workflow.add_node("simple_search", simple_search_node)
     workflow.add_node("research_search", research_search_node)
     workflow.add_node("rag_retrieval", rag_retrieval_node)
-    workflow.add_node("synthesizer", synthesize_response_node)
+    workflow.add_node("prepare_synthesis", prepare_synthesis_node)
 
     # Set entry point
     workflow.set_entry_point("query_analyzer")
@@ -63,8 +63,8 @@ def create_agent_graph():
     # Both search paths lead to RAG retrieval, then synthesis
     workflow.add_edge("simple_search", "rag_retrieval")
     workflow.add_edge("research_search", "rag_retrieval")
-    workflow.add_edge("rag_retrieval", "synthesizer")
-    workflow.add_edge("synthesizer", END)
+    workflow.add_edge("rag_retrieval", "prepare_synthesis")
+    workflow.add_edge("prepare_synthesis", END)
 
     # Compile with in-memory checkpointing for conversation persistence
     memory = MemorySaver()
