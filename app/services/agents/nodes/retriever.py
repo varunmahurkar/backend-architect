@@ -5,6 +5,7 @@ Combines results from academic (Pinecone) and conversation (pgvector) stores.
 """
 
 import logging
+import asyncio
 from typing import List, Dict
 from app.services.agents.state import AgentState
 
@@ -25,11 +26,11 @@ async def rag_retrieval_node(state: AgentState) -> dict:
 
     rag_context: List[Dict] = []
 
-    # Try academic vector store (Pinecone)
+    # Try academic vector store (Pinecone) with 5s timeout
     try:
         from app.services.vector_stores.academic_store import AcademicVectorStore
         academic_store = AcademicVectorStore()
-        academic_docs = await academic_store.search(query=query, top_k=3)
+        academic_docs = await asyncio.wait_for(academic_store.search(query=query, top_k=3), timeout=5.0)
         for doc in academic_docs:
             rag_context.append({
                 "content": doc.content,
@@ -39,18 +40,19 @@ async def rag_retrieval_node(state: AgentState) -> dict:
         logger.info(f"Academic RAG returned {len(academic_docs)} results")
     except ImportError:
         logger.debug("Academic vector store not available (Pinecone not configured)")
+    except asyncio.TimeoutError:
+        logger.warning("Academic RAG timed out after 5s")
     except Exception as e:
         logger.warning(f"Academic RAG failed: {e}")
 
-    # Try conversation vector store (pgvector) for personalized context
+    # Try conversation vector store (pgvector) for personalized context with 5s timeout
     if user_id:
         try:
             from app.services.vector_stores.conversation_store import ConversationVectorStore
             conv_store = ConversationVectorStore()
-            conv_docs = await conv_store.search(
-                query=query,
-                top_k=3,
-                filter={"user_id": user_id},
+            conv_docs = await asyncio.wait_for(
+                conv_store.search(query=query, top_k=3, filter={"user_id": user_id}),
+                timeout=5.0,
             )
             for doc in conv_docs:
                 rag_context.append({
@@ -61,6 +63,8 @@ async def rag_retrieval_node(state: AgentState) -> dict:
             logger.info(f"Conversation RAG returned {len(conv_docs)} results")
         except ImportError:
             logger.debug("Conversation vector store not available (pgvector not configured)")
+        except asyncio.TimeoutError:
+            logger.warning("Conversation RAG timed out after 5s")
         except Exception as e:
             logger.warning(f"Conversation RAG failed: {e}")
 

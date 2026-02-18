@@ -6,9 +6,11 @@ Uses Gemini Flash for fast, cost-effective classification (< 500ms target).
 
 import logging
 import json
+import asyncio
 from datetime import datetime
 from app.services.agents.state import AgentState
 from app.services.llm_service import get_llm
+from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +58,10 @@ async def analyze_query_node(state: AgentState) -> dict:
     logger.info(f"Analyzing query: {query[:100]}...")
 
     try:
-        # Use Gemini Flash for fast classification
-        llm = get_llm("google", streaming=False)
+        # Use configured classifier model for fast, cost-effective classification (3s timeout)
+        llm = get_llm(settings.classifier_provider, streaming=False, model_override=settings.classifier_model)
 
-        response = await llm.ainvoke(CLASSIFIER_PROMPT + query)
+        response = await asyncio.wait_for(llm.ainvoke(CLASSIFIER_PROMPT + query), timeout=3.0)
         raw_text = response.content if hasattr(response, "content") else str(response)
 
         # Parse JSON from response (handle markdown code blocks)
@@ -91,6 +93,9 @@ async def analyze_query_node(state: AgentState) -> dict:
             "current_phase": "analyzed",
         }
 
+    except asyncio.TimeoutError:
+        logger.warning("Classifier LLM timed out after 3s. Falling back to heuristics.")
+        return _heuristic_classification(query, state)
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse classifier response: {e}. Falling back to heuristics.")
         return _heuristic_classification(query, state)
