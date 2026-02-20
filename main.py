@@ -6,6 +6,7 @@ import os
 from app.api.routes.auth import router as auth_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.crawler import router as crawler_router
+from app.api.routes.conversations import router as conversations_router
 
 app = FastAPI(
     title="Backend Architect API",
@@ -67,6 +68,7 @@ async def preflight_handler(request: Request, rest_of_path: str):
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(crawler_router)
+app.include_router(conversations_router)
 
 @app.get("/")
 def read_root():

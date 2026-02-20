@@ -1,14 +1,14 @@
 """
-Synthesizer Node
-Generates the final response by combining search results, RAG context, and citations.
-Produces a well-formatted, citation-rich answer using the LLM.
+Synthesizer Node (Prepare Phase)
+Builds the synthesis prompt, citations, and message list but does NOT call the LLM.
+The actual LLM streaming happens in the endpoint after the graph completes,
+enabling real token-by-token streaming to the client.
 """
 
 import logging
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
 from app.services.agents.state import AgentState, SourceResult, CitationEntry
-from app.services.llm_service import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +45,15 @@ SYNTHESIS_PROMPT = """You are Nurav AI, an intelligent research assistant. Synth
 - Prioritize academic sources for factual claims when available"""
 
 
-async def synthesize_response_node(state: AgentState) -> dict:
+async def prepare_synthesis_node(state: AgentState) -> dict:
     """
-    Synthesize final response from all gathered sources and RAG context.
-    Builds citations list and generates a comprehensive response.
+    Prepare synthesis prompt and citations without calling the LLM.
+    Stores system prompt and messages in state for the endpoint to stream.
     """
     query = state.get("query", "")
-    provider = state.get("provider", "google")
     chat_history = state.get("chat_history")
     custom_system = state.get("system_prompt")
-    logger.info(f"Synthesizing response for: {query[:100]}")
+    logger.info(f"Preparing synthesis for: {query[:100]}")
 
     # Gather all source results
     web_results = state.get("web_results", [])
@@ -130,51 +129,28 @@ async def synthesize_response_node(state: AgentState) -> dict:
     if custom_system:
         system_prompt = f"{SYNTHESIS_PROMPT}\n\nAdditional instructions: {custom_system}"
 
-    full_prompt = f"{system_prompt}\n\n--- SOURCES ---\n{context_text}\n--- END SOURCES ---"
+    full_system = f"{system_prompt}\n\n--- SOURCES ---\n{context_text}\n--- END SOURCES ---"
 
-    # Generate response
-    try:
-        llm = get_llm(provider, streaming=False)
+    # Build messages list for LLM (serializable dicts, not LangChain objects)
+    messages = [{"role": "system", "content": full_system}]
 
-        # Build message list
-        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-        messages = [SystemMessage(content=full_prompt)]
+    if chat_history:
+        for msg in chat_history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role in ("user", "assistant"):
+                messages.append({"role": role, "content": content})
 
-        # Add chat history if available
-        if chat_history:
-            for msg in chat_history:
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                if role == "user":
-                    messages.append(HumanMessage(content=content))
-                elif role == "assistant":
-                    messages.append(AIMessage(content=content))
+    messages.append({"role": "user", "content": query})
 
-        messages.append(HumanMessage(content=query))
+    logger.info(f"Synthesis prepared: {len(citations)} citations, {len(messages)} messages")
 
-        response = await llm.ainvoke(messages)
-        response_text = response.content if hasattr(response, "content") else str(response)
-
-        logger.info(f"Synthesis complete: {len(response_text)} chars, {len(citations)} citations")
-
-        return {
-            "synthesized_response": response_text,
-            "citations": citations,
-            "current_phase": "synthesized",
-        }
-
-    except Exception as e:
-        logger.error(f"Synthesis failed: {e}")
-        # Fallback: return a basic response with available info
-        fallback = f"I encountered an error while generating a response: {str(e)}. "
-        if citations:
-            fallback += "However, I found some relevant sources you may want to check."
-        return {
-            "synthesized_response": fallback,
-            "citations": citations,
-            "current_phase": "synthesized",
-            "errors": state.get("errors", []) + [f"Synthesis failed: {str(e)}"],
-        }
+    return {
+        "citations": citations,
+        "synthesis_system_prompt": full_system,
+        "synthesis_messages": messages,
+        "current_phase": "synthesized",
+    }
 
 
 def _extract_domain(url: str) -> str:

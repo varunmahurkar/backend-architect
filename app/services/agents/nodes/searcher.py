@@ -9,6 +9,7 @@ import asyncio
 from typing import List, Dict
 from app.services.agents.state import AgentState, SourceResult
 from app.services.crawler_service import agentic_search
+from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,10 @@ async def simple_search_node(state: AgentState) -> dict:
     logger.info(f"Simple search for: {query[:100]}")
 
     try:
-        raw_results = await agentic_search(query=query, max_results=5)
+        raw_results = await asyncio.wait_for(
+            agentic_search(query=query, max_results=5),
+            timeout=settings.query_timeout_simple,
+        )
 
         web_results: List[SourceResult] = []
         for result in raw_results:
@@ -43,6 +47,13 @@ async def simple_search_node(state: AgentState) -> dict:
             "current_phase": "searched",
         }
 
+    except asyncio.TimeoutError:
+        logger.warning(f"Simple search timed out after {settings.query_timeout_simple}s")
+        return {
+            "web_results": [],
+            "current_phase": "searched",
+            "errors": state.get("errors", []) + ["Web search timed out"],
+        }
     except Exception as e:
         logger.error(f"Simple search failed: {e}")
         return {
@@ -63,17 +74,20 @@ async def research_search_node(state: AgentState) -> dict:
 
     errors = list(state.get("errors", []))
 
-    # Build list of search coroutines to run in parallel
+    # Per-source timeout: 60% of the overall research timeout
+    per_source_timeout = settings.query_timeout_research * 0.6
+
+    # Build list of search coroutines to run in parallel with timeouts
     tasks = {}
 
     if "web" in required_sources:
-        tasks["web"] = _search_web(query)
+        tasks["web"] = asyncio.wait_for(_search_web(query), timeout=per_source_timeout)
 
     if "arxiv" in required_sources:
-        tasks["arxiv"] = _search_arxiv(query)
+        tasks["arxiv"] = asyncio.wait_for(_search_arxiv(query), timeout=per_source_timeout)
 
     if "youtube" in required_sources:
-        tasks["youtube"] = _search_youtube(query)
+        tasks["youtube"] = asyncio.wait_for(_search_youtube(query), timeout=per_source_timeout)
 
     # Execute all searches in parallel
     results_map = {}
