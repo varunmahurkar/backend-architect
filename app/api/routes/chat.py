@@ -48,10 +48,10 @@ AGENTIC_SEARCH_PROMPT = """You are Nurav AI, an intelligent search assistant. Yo
 Analyze the search results provided and give a comprehensive, well-researched answer to the user's question.
 
 ## CITATION RULES - MANDATORY
-1. Add inline citations using this EXACT format: 【domain.com】 (use the special brackets 【 and 】)
-2. Extract the domain from each source URL (e.g., from "https://www.wikipedia.org/wiki/..." use 【wikipedia.org】)
+1. Add inline citations using numbered references: [1], [2], [3], etc.
+2. The number corresponds to the Source [N] label in the provided search results below
 3. Place citations IMMEDIATELY after any fact, claim, or information from a source
-4. You can cite multiple sources for one fact: "This is true 【source1.com】【source2.com】"
+4. Group multiple citations for the same fact as [1, 2] NOT [1][2]
 5. ONLY cite when the information comes from the provided search results
 6. Do NOT add citations for your own reasoning or general knowledge
 
@@ -65,12 +65,12 @@ Analyze the search results provided and give a comprehensive, well-researched an
 - Keep responses well-organized and easy to read
 
 ## EXAMPLE
-Given a source with URL "https://docs.python.org/3/tutorial/..." and snippet about Python lists:
+Given Source [1] with URL "https://docs.python.org/3/tutorial/..." about Python lists:
 
-Your response: "Python lists are mutable sequences 【docs.python.org】. They can contain items of different types and support operations like append and extend 【docs.python.org】."
+Your response: "Python lists are mutable sequences [1]. They can contain items of different types and support operations like append and extend [1]."
 
 ## IMPORTANT
-- Use 【 and 】 brackets (special Unicode characters, NOT regular brackets [ ])
+- Use [N] format with regular square brackets and the source number
 - Be comprehensive but concise
 - Synthesize information from multiple sources when relevant
 - If search results don't contain enough information, say so honestly"""
@@ -80,10 +80,10 @@ Your response: "Python lists are mutable sequences 【docs.python.org】. They c
 CITATION_SYSTEM_PROMPT = """You are Nurav AI, a helpful assistant with access to web search results.
 
 CRITICAL CITATION RULES - YOU MUST FOLLOW THESE:
-1. Add inline citations using this EXACT format: 【domain.com】 (use the special brackets 【 and 】)
-2. Use the "Domain for citation" value provided with each source (e.g., 【openai.com】, 【wikipedia.org】)
+1. Add inline citations using numbered references: [1], [2], [3], etc.
+2. The number corresponds to the Source [N] label in the provided sources below
 3. Place citations IMMEDIATELY after the sentence or fact you're citing
-4. You can cite multiple sources: "This fact 【source1.com】【source2.com】"
+4. Group multiple citations for the same fact as [1, 2] NOT [1][2]
 5. ALWAYS cite when using information from the provided sources
 6. Only omit citations for general knowledge not from sources
 
@@ -97,12 +97,12 @@ FORMATTING RULES - Use rich markdown formatting:
 - Use tables when comparing multiple items
 
 Example with sources:
-If sources include "Domain for citation: openai.com" and "Domain for citation: techcrunch.com"
+If Source [1] is from openai.com and Source [2] is from techcrunch.com:
 
 Your response should be:
-"GPT-4 was released by OpenAI in March 2023 【openai.com】. It showed major improvements in reasoning 【techcrunch.com】."
+"GPT-4 was released by OpenAI in March 2023 [1]. It showed major improvements in reasoning [2]."
 
-IMPORTANT: Use 【 and 】 brackets (NOT regular brackets). These are special Unicode characters.
+IMPORTANT: Use [N] format with regular square brackets and the source number.
 
 The web sources are provided below. Use them to answer accurately with proper citations."""
 
@@ -250,14 +250,13 @@ def _extract_domain(url: str) -> str:
 
 
 def _build_search_context(search_results: List[dict]) -> str:
-    """Build context string from search results for LLM."""
+    """Build numbered source context string from search results for LLM."""
     context_parts = []
     for i, result in enumerate(search_results, 1):
         domain = _extract_domain(result.get("url", ""))
-        context_parts.append(f"""
-Source [{i}]:
+        context_parts.append(f"""Source [{i}]:
 - URL: {result.get("url", "")}
-- Domain for citation: {domain}
+- Domain: {domain}
 - Title: {result.get("title", "")}
 - Content: {result.get("snippet", "")}
 """)
@@ -301,15 +300,17 @@ async def chat_stream_endpoint(
                 )
                 logger.info(f"Search returned {len(search_results)} results")
 
-                # Generate citations from search results
+                # Generate citations from search results with favicon URLs
                 for i, result in enumerate(search_results, 1):
                     domain = _extract_domain(result.get("url", ""))
+                    favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32" if domain else None
                     citation = Citation(
                         id=i,
                         url=result.get("url", ""),
                         root_url=f"https://{domain}",
                         title=result.get("title", ""),
                         snippet=result.get("snippet", ""),
+                        favicon_url=favicon_url,
                     )
                     citations.append(citation)
 

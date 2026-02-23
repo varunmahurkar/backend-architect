@@ -61,7 +61,7 @@ async def analyze_query_node(state: AgentState) -> dict:
         # Use configured classifier model for fast, cost-effective classification (3s timeout)
         llm = get_llm(settings.classifier_provider, streaming=False, model_override=settings.classifier_model)
 
-        response = await asyncio.wait_for(llm.ainvoke(CLASSIFIER_PROMPT + query), timeout=3.0)
+        response = await asyncio.wait_for(llm.ainvoke(CLASSIFIER_PROMPT + query), timeout=5.0)
         raw_text = response.content if hasattr(response, "content") else str(response)
 
         # Parse JSON from response (handle markdown code blocks)
@@ -94,7 +94,7 @@ async def analyze_query_node(state: AgentState) -> dict:
         }
 
     except asyncio.TimeoutError:
-        logger.warning("Classifier LLM timed out after 3s. Falling back to heuristics.")
+        logger.warning("Classifier LLM timed out after 5s. Falling back to heuristics.")
         return _heuristic_classification(query, state)
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse classifier response: {e}. Falling back to heuristics.")

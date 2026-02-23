@@ -15,17 +15,17 @@ logger = logging.getLogger(__name__)
 SYNTHESIS_PROMPT = """You are Nurav AI, an intelligent research assistant. Synthesize a comprehensive answer using the provided sources.
 
 ## CITATION RULES - MANDATORY
-1. Add inline citations using this EXACT format: 【domain.com】 (use the special brackets 【 and 】)
-2. Extract the domain from each source URL
+1. Add inline citations using numbered references: [1], [2], [3], etc.
+2. The number corresponds to the Source [N] label in the provided sources below
 3. Place citations IMMEDIATELY after any fact, claim, or information from a source
-4. You can cite multiple sources: "This is true 【source1.com】【source2.com】"
+4. Group multiple citations for the same fact as [1, 2] NOT [1][2]
 5. ONLY cite when information comes from the provided sources
-6. For academic papers, cite using 【arxiv.org】 format
+6. Do NOT add citations for your own reasoning or general knowledge
 
 ## SOURCE TYPES
 - Web sources: General web search results
-- Academic sources: Research papers from arXiv (cite as 【arxiv.org】)
-- Video sources: YouTube videos with transcripts (cite as 【youtube.com】)
+- Academic sources: Research papers from arXiv
+- Video sources: YouTube videos with transcripts
 - RAG context: Previously stored relevant information
 
 ## FORMATTING RULES
@@ -38,7 +38,7 @@ SYNTHESIS_PROMPT = """You are Nurav AI, an intelligent research assistant. Synth
 - Keep responses well-organized and easy to read
 
 ## IMPORTANT
-- Use 【 and 】 brackets (special Unicode characters, NOT regular brackets [ ])
+- Use [N] format with regular square brackets and the source number
 - Be comprehensive but concise
 - Synthesize information from multiple source types when available
 - If sources don't contain enough information, say so honestly
@@ -66,6 +66,7 @@ async def prepare_synthesis_node(state: AgentState) -> dict:
     citations: List[CitationEntry] = []
     for i, source in enumerate(all_sources, 1):
         domain = _extract_domain(source.get("url", ""))
+        favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32" if domain else ""
         citations.append({
             "id": i,
             "url": source.get("url", ""),
@@ -73,7 +74,7 @@ async def prepare_synthesis_node(state: AgentState) -> dict:
             "title": source.get("title", ""),
             "snippet": source.get("snippet", "")[:200],
             "source_type": source.get("source_type", "web"),
-            "favicon_url": "",
+            "favicon_url": favicon_url,
         })
 
     # Build context for LLM
