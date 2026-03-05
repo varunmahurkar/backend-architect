@@ -1,7 +1,5 @@
-"""
-Crawler service for web crawling with smart crawler selection.
-Uses Crawlee with BeautifulSoup (static) and Playwright (JS) crawlers.
-"""
+"""Crawler service — web crawling with smart static/JS crawler selection.
+Called by: crawler.py routes (crawl/search-and-crawl/chat), chat.py (web search mode)."""
 
 import asyncio
 import logging

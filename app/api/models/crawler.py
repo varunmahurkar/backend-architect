@@ -76,7 +76,7 @@ class CrawlRequest(BaseModel):
 
 
 class SearchAndCrawlRequest(BaseModel):
-    """Request to search web and crawl results (Perplexity-style)."""
+    """Request to search web and crawl results for citation-based responses."""
     query: str = Field(..., min_length=1, max_length=500, description="Search query")
     max_results: int = Field(default=5, ge=1, le=10, description="Max search results to crawl")
     crawler_type: CrawlerType = Field(default=CrawlerType.AUTO)
@@ -98,7 +98,7 @@ class WebChatRequest(BaseModel):
     stream: bool = False
 
     # Web crawling options
-    web_search_enabled: bool = Field(default=False, description="Enable Perplexity-style search")
+    web_search_enabled: bool = Field(default=False, description="Enable agentic web search with citations")
     urls: Optional[List[str]] = Field(None, max_length=10, description="Explicit URLs to crawl")
     crawler_type: CrawlerType = Field(default=CrawlerType.AUTO)
     include_citations: bool = Field(default=True)

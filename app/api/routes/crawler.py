@@ -1,6 +1,6 @@
-"""
-Crawler API routes for web crawling and citation-based chat.
-"""
+"""Crawler API routes — web crawling and citation-based chat.
+Registered in: main.py. Calls: crawler_service (crawl/search), llm_service (chat/stream).
+Called by: frontend as alternative web-augmented chat endpoints."""
 
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import StreamingResponse
@@ -28,8 +28,6 @@ from app.services.llm_service import chat, chat_stream
 router = APIRouter(prefix="/crawler", tags=["crawler"])
 
 
-# === Citation System Prompt ===
-
 CITATION_SYSTEM_PROMPT = """You are Nurav AI, a helpful assistant with access to web search results.
 
 IMPORTANT CITATION RULES:
@@ -51,12 +49,8 @@ async def crawl_endpoint(
     request: CrawlRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
-    """
-    Crawl specific URLs.
-
-    - **urls**: List of URLs to crawl (max 10)
-    - **crawler_type**: auto, beautifulsoup, or playwright
-    """
+    """Crawl specific URLs using crawler_service.crawl_urls. Returns extracted page content.
+    Called by: chat routes when explicit URLs are provided."""
     try:
         result = await crawl_urls(
             urls=request.urls,
@@ -76,13 +70,8 @@ async def search_and_crawl_endpoint(
     request: SearchAndCrawlRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
-    """
-    Search web and crawl top results (Perplexity-style).
-
-    - **query**: Search query
-    - **max_results**: Number of results to crawl (1-10)
-    - **search_engine**: duckduckgo (default)
-    """
+    """Search web and crawl top results via crawler_service.search_and_crawl.
+    Called by: chat routes when web_search_enabled=true."""
     try:
         result, urls = await search_and_crawl(
             query=request.query,
@@ -104,17 +93,8 @@ async def web_chat_endpoint(
     request: WebChatRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
-    """
-    Chat with web crawling and citations.
-
-    Two modes:
-    1. **Explicit URLs**: Provide urls[] to crawl specific pages
-    2. **Auto-search**: Set web_search_enabled=true for Perplexity-style search
-
-    Response includes:
-    - message: LLM response with [1], [2] citation markers
-    - citations: Structured citation data for frontend rendering
-    """
+    """Chat with web context — crawls URLs or searches web, builds citation context,
+    sends to llm_service.chat. Called by: frontend as alternative to /chat/completions."""
     try:
         trigger_mode = None
         search_query = None
@@ -198,15 +178,8 @@ async def web_chat_stream_endpoint(
     request: WebChatRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
-    """
-    Stream chat response with web crawling and citations.
-
-    Returns Server-Sent Events (SSE) stream with:
-    - type: "citation" - Citation data (sent first)
-    - type: "content" - Response text chunks
-    - type: "done" - Stream complete
-    - type: "error" - Error occurred
-    """
+    """SSE streaming version of web_chat_endpoint. Sends citations first, then streams
+    LLM response via llm_service.chat_stream. Called by: frontend for streaming web chat."""
     async def generate() -> AsyncGenerator[str, None]:
         try:
             trigger_mode = None

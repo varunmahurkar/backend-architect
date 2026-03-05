@@ -17,10 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def route_by_complexity(state: AgentState) -> str:
-    """
-    Route to appropriate search strategy based on detected complexity.
-    Simple queries get fast web search, research queries get parallel multi-source.
-    """
+    """Route to simple_search or research_search based on query complexity mode."""
     mode = state.get("mode", state.get("query_complexity", "simple"))
     logger.info(f"Routing query with mode: {mode}")
 
@@ -30,27 +27,17 @@ def route_by_complexity(state: AgentState) -> str:
 
 
 def create_agent_graph():
-    """
-    Create and compile the LangGraph agentic workflow.
-
-    Graph structure:
-        query_analyzer -> [simple_search | research_search] -> rag_retrieval -> synthesizer -> END
-
-    Returns compiled graph with in-memory checkpointing.
-    """
+    """Build and compile the LangGraph workflow: analyzer -> [simple|research search] -> rag -> synthesizer -> END."""
     workflow = StateGraph(AgentState)
 
-    # Register nodes
     workflow.add_node("query_analyzer", analyze_query_node)
     workflow.add_node("simple_search", simple_search_node)
     workflow.add_node("research_search", research_search_node)
     workflow.add_node("rag_retrieval", rag_retrieval_node)
     workflow.add_node("prepare_synthesis", prepare_synthesis_node)
 
-    # Set entry point
     workflow.set_entry_point("query_analyzer")
 
-    # Conditional routing based on complexity
     workflow.add_conditional_edges(
         "query_analyzer",
         route_by_complexity,
@@ -60,13 +47,11 @@ def create_agent_graph():
         },
     )
 
-    # Both search paths lead to RAG retrieval, then synthesis
     workflow.add_edge("simple_search", "rag_retrieval")
     workflow.add_edge("research_search", "rag_retrieval")
     workflow.add_edge("rag_retrieval", "prepare_synthesis")
     workflow.add_edge("prepare_synthesis", END)
 
-    # Compile with in-memory checkpointing for conversation persistence
     memory = MemorySaver()
     return workflow.compile(checkpointer=memory)
 

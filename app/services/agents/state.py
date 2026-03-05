@@ -1,8 +1,4 @@
-"""
-Agent State Schema
-Defines the shared state for the LangGraph agentic workflow.
-All nodes read from and write to this state during query processing.
-"""
+"""Agent State Schema — TypedDict shared state read and written by all nodes in the agentic workflow."""
 
 from typing import TypedDict, Annotated, List, Dict, Optional, Literal
 from langgraph.graph import add_messages
@@ -33,35 +29,8 @@ class CitationEntry(TypedDict, total=False):
 
 
 class AgentState(TypedDict, total=False):
-    """
-    Core state for the agentic workflow.
+    """Shared state passed between all nodes in the agentic workflow."""
 
-    Flow: query_analyzer -> route -> search nodes -> rag_retrieval -> synthesizer
-
-    Fields:
-        query: The original user query
-        user_id: Authenticated user ID (for personalized RAG)
-        mode: Confirmed complexity mode (simple/research/deep)
-        query_complexity: AI-detected complexity level
-        query_intent: Classified intent (factual, comparative, tutorial, etc.)
-        query_domains: Detected domains (cs, medical, general, etc.)
-        requires_sources: Sources needed for this query
-        messages: LangGraph message history (with reducer)
-        web_results: Search results from DuckDuckGo
-        academic_results: Papers from arXiv/PubMed/Scholar
-        youtube_results: Video results with transcripts
-        rag_context: Retrieved context from vector stores
-        citations: Formatted citation references for response
-        synthesized_response: Final generated response text
-        current_phase: Current processing phase for status updates
-        provider: LLM provider to use for generation
-        chat_history: Prior conversation context
-        system_prompt: Custom system instructions
-        start_time: Timestamp when processing began
-        errors: Accumulated error messages
-    """
-
-    # Query analysis
     query: str
     user_id: Optional[str]
     mode: Literal["simple", "research", "deep"]
@@ -69,27 +38,15 @@ class AgentState(TypedDict, total=False):
     query_intent: str
     query_domains: List[str]
     requires_sources: List[str]
-
-    # LangGraph messages (with add_messages reducer for proper accumulation)
-    messages: Annotated[list, add_messages]
-
-    # Source results
+    messages: Annotated[list, add_messages]  # add_messages reducer for proper accumulation
     web_results: List[SourceResult]
     academic_results: List[SourceResult]
     youtube_results: List[SourceResult]
-
-    # RAG context
     rag_context: List[Dict]
-
-    # Output
     citations: List[CitationEntry]
     synthesized_response: Optional[str]
-
-    # Synthesis preparation (prompt built in graph, LLM streaming in endpoint)
-    synthesis_system_prompt: Optional[str]
+    synthesis_system_prompt: Optional[str]  # prompt built in graph, LLM streaming in endpoint
     synthesis_messages: Optional[List[Dict]]
-
-    # Processing metadata
     current_phase: str
     provider: Optional[str]
     chat_history: Optional[List[Dict]]
