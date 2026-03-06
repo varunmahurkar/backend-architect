@@ -1,8 +1,4 @@
-"""
-RAG Retrieval Node
-Retrieves relevant context from vector stores based on query and user history.
-Combines results from academic (Pinecone) and conversation (pgvector) stores.
-"""
+"""RAG Retrieval Node — fetches context from Pinecone (academic) and pgvector (conversation) stores."""
 
 import logging
 import asyncio
@@ -13,20 +9,13 @@ logger = logging.getLogger(__name__)
 
 
 async def rag_retrieval_node(state: AgentState) -> dict:
-    """
-    Retrieve relevant context from vector stores.
-    Searches academic papers (Pinecone) and conversation history (pgvector).
-
-    Currently gracefully skips if vector stores are not configured.
-    This allows the system to work without vector DB setup in MVP.
-    """
+    """Retrieve relevant context from vector stores. Gracefully skips if stores are not configured (MVP-safe)."""
     query = state.get("query", "")
     user_id = state.get("user_id")
     logger.info(f"RAG retrieval for: {query[:100]}, user_id: {user_id}")
 
     rag_context: List[Dict] = []
 
-    # Try academic vector store (Pinecone) with 5s timeout
     try:
         from app.services.vector_stores.academic_store import AcademicVectorStore
         academic_store = AcademicVectorStore()
@@ -45,7 +34,6 @@ async def rag_retrieval_node(state: AgentState) -> dict:
     except Exception as e:
         logger.warning(f"Academic RAG failed: {e}")
 
-    # Try conversation vector store (pgvector) for personalized context with 5s timeout
     if user_id:
         try:
             from app.services.vector_stores.conversation_store import ConversationVectorStore

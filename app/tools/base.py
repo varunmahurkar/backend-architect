@@ -1,8 +1,4 @@
-"""
-Tool Base — ToolMetadata, ToolStatus, and @nurav_tool decorator.
-Provides the foundation for all Nurav AI tools with metadata tracking
-and LangChain @tool integration.
-"""
+"""Tool Base — ToolMetadata, ToolStatus, and @nurav_tool decorator."""
 
 import functools
 import logging
@@ -53,16 +49,7 @@ class ToolMetadata:
 
 
 def nurav_tool(metadata: ToolMetadata) -> Callable:
-    """
-    Decorator that attaches ToolMetadata to a function.
-    Apply BEFORE @tool so the metadata is preserved on the outer function.
-
-    Usage:
-        @nurav_tool(metadata=ToolMetadata(...))
-        @tool
-        async def my_tool(query: str) -> str:
-            ...
-    """
+    """Attach ToolMetadata to a function. Apply BEFORE @tool."""
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:

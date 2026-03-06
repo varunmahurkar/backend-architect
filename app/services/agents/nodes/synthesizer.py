@@ -1,9 +1,5 @@
-"""
-Synthesizer Node (Prepare Phase)
-Builds the synthesis prompt, citations, and message list but does NOT call the LLM.
-The actual LLM streaming happens in the endpoint after the graph completes,
-enabling real token-by-token streaming to the client.
-"""
+"""Synthesizer Node — builds citations and synthesis prompt without calling the LLM.
+LLM streaming happens in the endpoint after graph completion for true token-by-token streaming."""
 
 import logging
 from typing import List, Dict, Optional
@@ -46,22 +42,17 @@ SYNTHESIS_PROMPT = """You are Nurav AI, an intelligent research assistant. Synth
 
 
 async def prepare_synthesis_node(state: AgentState) -> dict:
-    """
-    Prepare synthesis prompt and citations without calling the LLM.
-    Stores system prompt and messages in state for the endpoint to stream.
-    """
+    """Build citations and synthesis messages list; stores them in state for endpoint streaming."""
     query = state.get("query", "")
     chat_history = state.get("chat_history")
     custom_system = state.get("system_prompt")
     logger.info(f"Preparing synthesis for: {query[:100]}")
 
-    # Gather all source results
     web_results = state.get("web_results", [])
     academic_results = state.get("academic_results", [])
     youtube_results = state.get("youtube_results", [])
     rag_context = state.get("rag_context", [])
 
-    # Build citations from all sources
     all_sources = web_results + academic_results + youtube_results
     citations: List[CitationEntry] = []
     for i, source in enumerate(all_sources, 1):
@@ -77,7 +68,6 @@ async def prepare_synthesis_node(state: AgentState) -> dict:
             "favicon_url": favicon_url,
         })
 
-    # Build context for LLM
     context_parts = []
 
     if web_results:
@@ -125,15 +115,13 @@ async def prepare_synthesis_node(state: AgentState) -> dict:
 
     context_text = "\n".join(context_parts)
 
-    # Build system prompt
     system_prompt = SYNTHESIS_PROMPT
     if custom_system:
         system_prompt = f"{SYNTHESIS_PROMPT}\n\nAdditional instructions: {custom_system}"
 
     full_system = f"{system_prompt}\n\n--- SOURCES ---\n{context_text}\n--- END SOURCES ---"
 
-    # Build messages list for LLM (serializable dicts, not LangChain objects)
-    messages = [{"role": "system", "content": full_system}]
+    messages = [{"role": "system", "content": full_system}]  # plain dicts, not LangChain objects
 
     if chat_history:
         for msg in chat_history:

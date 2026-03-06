@@ -108,6 +108,12 @@ dmypy.json
 # Ruff
 .ruff_cache/
 
+# Storage (LangChain memory / request queues)
+storage/
+
+# Windows device file artifacts
+nul
+
 # Distribution
 *.tar.gz
 *.zip

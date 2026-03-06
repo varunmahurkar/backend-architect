@@ -15,10 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 async def simple_search_node(state: AgentState) -> dict:
-    """
-    Simple web search using existing DuckDuckGo integration.
-    Used for quick factual queries (< 5s target).
-    """
+    """DuckDuckGo web search for simple queries (< 5s target)."""
     query = state.get("query", "")
     logger.info(f"Simple search for: {query[:100]}")
 
@@ -64,20 +61,15 @@ async def simple_search_node(state: AgentState) -> dict:
 
 
 async def research_search_node(state: AgentState) -> dict:
-    """
-    Parallel multi-source search for research-level queries.
-    Searches web, arXiv, and YouTube concurrently (5-15s target).
-    """
+    """Parallel multi-source search across web, arXiv, and YouTube for research queries (5-15s target)."""
     query = state.get("query", "")
     required_sources = state.get("requires_sources", ["web"])
     logger.info(f"Research search for: {query[:100]}, sources: {required_sources}")
 
     errors = list(state.get("errors", []))
 
-    # Per-source timeout: 60% of the overall research timeout
-    per_source_timeout = settings.query_timeout_research * 0.6
+    per_source_timeout = settings.query_timeout_research * 0.6  # 60% of overall research timeout
 
-    # Build list of search coroutines to run in parallel with timeouts
     tasks = {}
 
     if "web" in required_sources:
@@ -89,7 +81,6 @@ async def research_search_node(state: AgentState) -> dict:
     if "youtube" in required_sources:
         tasks["youtube"] = asyncio.wait_for(_search_youtube(query), timeout=per_source_timeout)
 
-    # Execute all searches in parallel
     results_map = {}
     if tasks:
         task_items = list(tasks.items())

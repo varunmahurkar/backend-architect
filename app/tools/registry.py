@@ -1,8 +1,4 @@
-"""
-Tool Registry — Auto-discovery of tools with metadata caching.
-Scans app/tools/*/ subdirectories, imports modules, and finds functions
-decorated with @nurav_tool by checking for ._nurav_metadata attribute.
-"""
+"""Tool Registry — Auto-discovery of @nurav_tool decorated functions."""
 
 import importlib
 import inspect

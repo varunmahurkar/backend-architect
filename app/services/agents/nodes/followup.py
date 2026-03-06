@@ -1,8 +1,4 @@
-"""
-Follow-up Questions Generator
-Generates 5 related follow-up questions after a response using gpt-4o-mini.
-Fast and cheap (~150 tokens). 5s timeout, gracefully skips on failure.
-"""
+"""Follow-up Questions Generator — produces 5 related questions after a response (~150 tokens, 5s timeout)."""
 
 import logging
 import json
@@ -23,12 +19,8 @@ Return format: ["question 1?", "question 2?", "question 3?", "question 4?", "que
 
 
 async def generate_followup_questions(query: str, response_text: str) -> List[str]:
-    """
-    Generate 5 follow-up question suggestions.
-    Uses gpt-4o-mini for speed and cost. 5s timeout, returns empty on failure.
-    """
+    """Return 5 follow-up question suggestions, or [] on timeout/error."""
     try:
-        # Extract first 500 chars as topic summary
         topics = response_text[:500] if response_text else query
 
         llm = get_llm(
@@ -42,7 +34,6 @@ async def generate_followup_questions(query: str, response_text: str) -> List[st
 
         raw_text = response.content if hasattr(response, "content") else str(response)
 
-        # Parse JSON array
         json_text = raw_text.strip()
         if json_text.startswith("```"):
             json_text = json_text.split("```")[1]
