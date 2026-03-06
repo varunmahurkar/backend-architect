@@ -1,8 +1,4 @@
-"""
-Response Quality Validator
-Lightweight relevance check using gpt-4o-mini to verify the response addresses the query.
-Non-blocking: results are logged for quality tracking, never shown to the user.
-"""
+"""Response Quality Validator — non-blocking relevance check; results are logged only, never surfaced to users."""
 
 import logging
 import json
@@ -24,10 +20,7 @@ Response (first 500 chars): {response}"""
 
 
 async def validate_response(query: str, response_text: str) -> Dict:
-    """
-    Validate that a response addresses the user's query.
-    Returns {relevant: bool, reason: str}. 3s timeout, returns default on failure.
-    """
+    """Check if a response addresses the query. Returns {relevant, reason}; defaults to relevant=True on error."""
     try:
         llm = get_llm(
             settings.classifier_provider,
@@ -43,7 +36,6 @@ async def validate_response(query: str, response_text: str) -> Dict:
         result = await asyncio.wait_for(llm.ainvoke(prompt), timeout=3.0)
         raw_text = result.content if hasattr(result, "content") else str(result)
 
-        # Parse JSON
         json_text = raw_text.strip()
         if json_text.startswith("```"):
             json_text = json_text.split("```")[1]

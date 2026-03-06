@@ -1,7 +1,6 @@
-"""
-Password service with complex hashing and validation.
-Uses bcrypt + custom pepper + HMAC for extra security.
-"""
+"""Password hashing (bcrypt + pepper + HMAC) and strength validation.
+Called by: auth.signup (validate), auth.validate_password_endpoint (real-time check)."""
+import logging
 import re
 import hashlib
 import hmac
@@ -9,6 +8,8 @@ import secrets
 import base64
 from typing import Tuple, Optional
 from app.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 try:
     import bcrypt
@@ -30,10 +31,8 @@ SPECIAL_CHARS = "!@#$%^&*()_+-=[]{}|;':\",./<>?"
 
 
 def validate_password(password: str) -> Tuple[bool, str, list]:
-    """
-    Validate password complexity.
-    Returns: (is_valid, error_message, list_of_issues)
-    """
+    """Check password meets complexity requirements (8+ chars, mixed case, digit, special).
+    Called by: auth.signup and auth.validate_password_endpoint."""
     issues = []
 
     if not password:
@@ -76,9 +75,8 @@ def validate_password(password: str) -> Tuple[bool, str, list]:
 
 
 def calculate_password_strength(password: str) -> dict:
-    """
-    Calculate password strength score (0-100).
-    """
+    """Score password 0-100 with level (weak/fair/good/strong).
+    Called by: auth.validate_password_endpoint for frontend strength meter."""
     score = 0
     feedback = []
 
@@ -149,10 +147,7 @@ def _apply_pepper(password: str) -> bytes:
 
 
 def _add_custom_twist(peppered: bytes, salt: bytes) -> bytes:
-    """
-    Custom twist: XOR peppered password with derived key from salt.
-    This adds an extra layer that's unique to our implementation.
-    """
+    """XOR peppered password with salt-derived key."""
     # Derive a key from salt using SHA-256
     derived = hashlib.sha256(salt + PEPPER.encode('utf-8')).digest()
 
@@ -163,18 +158,8 @@ def _add_custom_twist(peppered: bytes, salt: bytes) -> bytes:
 
 
 def hash_password(password: str) -> str:
-    """
-    Hash password with bcrypt + pepper + custom twist.
-
-    Process:
-    1. Apply HMAC with pepper
-    2. Generate bcrypt salt
-    3. Apply custom twist
-    4. Hash with bcrypt
-    5. Encode result with version prefix
-
-    Returns: Encoded hash string
-    """
+    """Hash with HMAC pepper -> custom XOR twist -> bcrypt. Returns versioned hash string.
+    Called by: future local auth (currently Supabase handles hashing)."""
     # Step 1: Apply pepper using HMAC
     peppered = _apply_pepper(password)
 
@@ -195,9 +180,8 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    """
-    Verify password against stored hash.
-    """
+    """Verify password against stored hash by recreating twist + bcrypt check.
+    Called by: future local auth."""
     try:
         # Check version prefix
         if not hashed.startswith("$nurav$v1$"):
@@ -218,7 +202,7 @@ def verify_password(password: str, hashed: str) -> bool:
         return bcrypt.checkpw(twisted_b64.encode('utf-8'), bcrypt_hash.encode('utf-8'))
 
     except Exception as e:
-        print(f"Password verification error: {e}")
+        logger.error(f"Password verification error: {e}")
         return False
 
 

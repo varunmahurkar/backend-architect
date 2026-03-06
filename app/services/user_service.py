@@ -1,13 +1,12 @@
-"""
-User service for syncing to auth_users_table.
-- user_uuid: from Supabase Auth
-- shard_num: 1-26 based on first letter of username
-- username: 6-18 chars, starts with letter, only _ - . allowed
-"""
+"""User service — syncs Supabase Auth users to auth_users_table.
+Called by: auth routes (signup/signin/signout lifecycle), chat routes (get user profile)."""
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 from app.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 try:
     from supabase import create_client
@@ -27,10 +26,7 @@ def get_supabase_client():
 
 
 def get_supabase_admin_client():
-    """
-    Get Supabase client with service role key (for database operations).
-    This bypasses Row Level Security (RLS).
-    """
+    """Get Supabase client with service role key (bypasses RLS)."""
     if not settings.supabase_url:
         raise ValueError("SUPABASE_URL not configured")
 
@@ -42,13 +38,8 @@ def get_supabase_admin_client():
 
 
 def validate_username(username: str) -> Tuple[bool, str]:
-    """
-    Validate username:
-    - 6-18 characters
-    - Must start with a letter (a-z, A-Z)
-    - Can contain letters, numbers, underscore, dash, dot
-    - Numbers only in middle or end, not at start
-    """
+    """Validate username format (6-18 chars, starts with letter, allows _ - .).
+    Called by: auth.signup, auth.check_username."""
     if not username:
         return False, "Username is required"
 
@@ -79,15 +70,8 @@ def sync_user_signup(
     username: str,
     name: Optional[str] = None
 ) -> dict:
-    """
-    Sync user to auth_users_table on signup.
-
-    Args:
-        user_uuid: Supabase Auth user UUID
-        email: User email address
-        username: Validated username (6-18 chars, starts with letter)
-        name: Optional display name
-    """
+    """Insert new user row into auth_users_table with shard_num and default role.
+    Called by: auth.signup after Supabase Auth account creation."""
     supabase = get_supabase_admin_client()
 
     # Build user data matching the actual table columns
@@ -115,7 +99,7 @@ def sync_user_signup(
 
 
 def sync_user_signin(user_uuid: str) -> dict:
-    """Update last_login_at on signin."""
+    """Update last_login_at timestamp in auth_users_table. Called by: auth.signin."""
     supabase = get_supabase_admin_client()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -126,12 +110,12 @@ def sync_user_signin(user_uuid: str) -> dict:
         }).eq("user_uuid", user_uuid).execute()
         return result.data[0] if result.data else {}
     except Exception as e:
-        print(f"Signin sync error: {e}")
+        logger.warning(f"Signin sync error: {e}")
         return {}
 
 
 def sync_user_signout(user_uuid: str) -> dict:
-    """Update on signout."""
+    """Update updated_at timestamp in auth_users_table. Called by: auth.signout."""
     supabase = get_supabase_admin_client()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -141,12 +125,12 @@ def sync_user_signout(user_uuid: str) -> dict:
         }).eq("user_uuid", user_uuid).execute()
         return result.data[0] if result.data else {}
     except Exception as e:
-        print(f"Signout sync error: {e}")
+        logger.warning(f"Signout sync error: {e}")
         return {}
 
 
 def check_username_exists(username: str) -> bool:
-    """Check if username already taken."""
+    """Direct DB check if username exists in auth_users_table. Called by: bloom_filter_service as fallback."""
     supabase = get_supabase_admin_client()
     try:
         result = supabase.table("auth_users_table").select("username").eq(
@@ -154,12 +138,13 @@ def check_username_exists(username: str) -> bool:
         ).execute()
         return len(result.data) > 0
     except Exception as e:
-        print(f"Username check error: {e}")
+        logger.warning(f"Username check error: {e}")
         return False
 
 
 def get_user_by_uuid(user_uuid: str) -> Optional[dict]:
-    """Get user from auth_users_table."""
+    """Fetch full user row from auth_users_table by UUID.
+    Called by: auth.get_current_user_info, auth.signin, auth.get_user_profile."""
     supabase = get_supabase_admin_client()
     try:
         result = supabase.table("auth_users_table").select("*").eq(
@@ -167,5 +152,5 @@ def get_user_by_uuid(user_uuid: str) -> Optional[dict]:
         ).execute()
         return result.data[0] if result.data else None
     except Exception as e:
-        print(f"Get user error: {e}")
+        logger.warning(f"Get user error: {e}")
         return None

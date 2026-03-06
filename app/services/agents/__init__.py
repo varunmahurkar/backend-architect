@@ -1,4 +1,1 @@
-"""
-Agentic workflow module.
-LangGraph-based state machine for adaptive query processing.
-"""
+"""Agentic workflow module — LangGraph state machine for adaptive query processing."""

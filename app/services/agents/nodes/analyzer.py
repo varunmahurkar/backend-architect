@@ -48,23 +48,17 @@ User query: """
 
 
 async def analyze_query_node(state: AgentState) -> dict:
-    """
-    Analyze query to determine complexity, intent, and required sources.
-    Uses Gemini Flash for speed and cost efficiency.
-
-    Returns partial state update with classification results.
-    """
+    """Classify query complexity, intent, domains, and required sources. Returns partial state update."""
     query = state.get("query", "")
     logger.info(f"Analyzing query: {query[:100]}...")
 
     try:
-        # Use configured classifier model for fast, cost-effective classification (3s timeout)
         llm = get_llm(settings.classifier_provider, streaming=False, model_override=settings.classifier_model)
 
         response = await asyncio.wait_for(llm.ainvoke(CLASSIFIER_PROMPT + query), timeout=5.0)
         raw_text = response.content if hasattr(response, "content") else str(response)
 
-        # Parse JSON from response (handle markdown code blocks)
+        # Strip markdown code fences if present
         json_text = raw_text.strip()
         if json_text.startswith("```"):
             json_text = json_text.split("```")[1]
@@ -79,8 +73,7 @@ async def analyze_query_node(state: AgentState) -> dict:
         domains = classification.get("domains", ["general"])
         sources = classification.get("sources", ["web"])
 
-        # Override mode if user explicitly set it
-        mode = state.get("mode", complexity)
+        mode = state.get("mode", complexity)  # respect user-override over detected complexity
 
         logger.info(f"Classification: complexity={complexity}, intent={intent}, domains={domains}, sources={sources}")
 
@@ -105,22 +98,17 @@ async def analyze_query_node(state: AgentState) -> dict:
 
 
 def _heuristic_classification(query: str, state: AgentState) -> dict:
-    """
-    Fallback heuristic classifier when LLM classification fails.
-    Uses keyword matching and query structure analysis.
-    """
+    """Keyword-based fallback classifier used when LLM classification times out or fails."""
     query_lower = query.lower().strip()
     words = query_lower.split()
     word_count = len(words)
 
-    # Complexity heuristics
     complexity = "simple"
     if word_count > 20 or any(kw in query_lower for kw in ["compare", "versus", "vs", "difference between", "pros and cons", "analyze", "explain in detail"]):
         complexity = "research"
     if any(kw in query_lower for kw in ["comprehensive", "in-depth", "literature review", "state of the art", "survey"]):
         complexity = "deep"
 
-    # Intent heuristics
     intent = "factual"
     if query_lower.startswith(("what is", "what are", "define")):
         intent = "definition"
@@ -131,7 +119,6 @@ def _heuristic_classification(query: str, state: AgentState) -> dict:
     elif any(kw in query_lower for kw in ["analyze", "analysis", "evaluate", "assess"]):
         intent = "analysis"
 
-    # Source heuristics
     sources = ["web"]
     academic_keywords = ["paper", "research", "study", "algorithm", "neural", "machine learning",
                          "deep learning", "transformer", "arxiv", "model", "architecture", "training"]
@@ -142,7 +129,6 @@ def _heuristic_classification(query: str, state: AgentState) -> dict:
     if any(kw in query_lower for kw in video_keywords):
         sources.append("youtube")
 
-    # Domain heuristics
     domains = ["general"]
     if any(kw in query_lower for kw in ["code", "programming", "python", "javascript", "api", "software", "algorithm"]):
         domains = ["cs"]

@@ -1,7 +1,5 @@
-"""
-LLM Service using LangChain with support for multiple providers.
-Currently supports: Google Gemini, OpenAI, Anthropic
-"""
+"""LLM service — multi-provider LangChain wrapper (Gemini, OpenAI, Anthropic).
+Called by: chat.py (completions/stream), crawler.py (web chat), agents/graph.py (agentic nodes)."""
 
 from typing import Optional, AsyncGenerator, Literal
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -14,17 +12,7 @@ LLMProvider = Literal["google", "openai", "anthropic"]
 
 
 def get_llm(provider: Optional[LLMProvider] = None, streaming: bool = False, model_override: Optional[str] = None):
-    """
-    Get LLM instance based on provider.
-
-    Args:
-        provider: LLM provider (google, openai, anthropic). Defaults to settings default.
-        streaming: Enable streaming responses.
-        model_override: Override the default model for this provider (e.g. "gpt-4o-mini").
-
-    Returns:
-        LangChain LLM instance
-    """
+    """Get LangChain LLM instance for the given provider."""
     provider = provider or settings.default_llm_provider
 
     if provider == "google":

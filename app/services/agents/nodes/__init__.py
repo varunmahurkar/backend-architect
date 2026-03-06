@@ -1,4 +1,1 @@
-"""
-Agent graph nodes for the agentic workflow.
-Each node performs a specific step in the query processing pipeline.
-"""
+"""Agent graph nodes — each node performs one step in the query processing pipeline."""
