@@ -1,8 +1,6 @@
-"""
-Chat API routes for LLM interactions.
-Supports multiple providers with streaming responses.
-Includes agentic workflow endpoints for adaptive query processing.
-"""
+"""Chat API routes — multi-provider LLM with agentic search.
+Registered in: main.py. Calls: llm_service, crawler_service, agents/graph.
+Called by: frontend useChat hook via /chat/stream, /chat/agentic-stream, /chat/suggest-mode."""
 
 import json
 import logging
@@ -39,8 +37,6 @@ from app.services.crawler_service import (
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-
-# === Citation System Prompt ===
 
 AGENTIC_SEARCH_PROMPT = """You are Nurav AI, an intelligent search assistant. You have access to web search results to answer user questions accurately.
 
@@ -121,7 +117,7 @@ class ChatRequest(BaseModel):
     system_prompt: Optional[str] = None
     stream: bool = False
     # Web search options
-    web_search_enabled: bool = Field(default=False, description="Enable Perplexity-style search")
+    web_search_enabled: bool = Field(default=False, description="Enable agentic web search with citations")
     urls: Optional[List[str]] = Field(None, max_length=10, description="Explicit URLs to crawl")
     crawler_type: CrawlerType = Field(default=CrawlerType.AUTO, description="auto, beautifulsoup, or playwright")
     # Agentic mode options
@@ -152,18 +148,8 @@ async def chat_completions(
     request: ChatRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
-    """
-    Send a message to the LLM and get a response.
-
-    - **message**: User message (required)
-    - **provider**: LLM provider - google, openai, anthropic (default: google)
-    - **chat_history**: Previous messages for context
-    - **system_prompt**: Custom system prompt
-    - **stream**: Enable streaming (use /chat/stream endpoint instead)
-    - **web_search_enabled**: Enable Perplexity-style web search
-    - **urls**: Explicit URLs to crawl for context
-    - **crawler_type**: auto, beautifulsoup, or playwright
-    """
+    """Non-streaming LLM response with optional web search. Calls crawler_service for
+    search/crawl, builds citation context, sends to llm_service.chat. Called by: frontend useChat (non-stream)."""
     try:
         trigger_mode = None
         search_query = None
@@ -268,18 +254,8 @@ async def chat_stream_endpoint(
     request: ChatRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
-    """
-    Stream a response from the LLM with agentic web search.
-
-    Returns Server-Sent Events (SSE) stream.
-
-    When web_search_enabled=true:
-    - type: "status" - Progress phase (searching, generating)
-    - type: "citation" - Citation data from search results
-    - type: "content" - Response text chunks
-    - type: "done" - Stream complete
-    - type: "error" - Error occurred
-    """
+    """SSE stream with agentic web search. Calls crawler_service.agentic_search for citations,
+    streams LLM response via llm_service.chat_stream. Called by: frontend useChat (/chat/stream)."""
     async def generate() -> AsyncGenerator[str, None]:
         web_mode = request.web_search_enabled
         try:
@@ -390,11 +366,7 @@ async def chat_stream_endpoint(
 
 @router.get("/providers", response_model=ProvidersResponse)
 async def list_providers():
-    """
-    Get list of available LLM providers.
-
-    Returns configured providers with their models.
-    """
+    """Return configured LLM providers and models from llm_service. Called by: frontend provider selector."""
     providers = get_available_providers()
 
     if not providers:
@@ -407,11 +379,6 @@ async def list_providers():
         }])
 
     return ProvidersResponse(providers=providers)
-
-
-# =============================================================================
-# Agentic Workflow Endpoints
-# =============================================================================
 
 
 class ModeSuggestionResponse(BaseModel):
@@ -428,11 +395,8 @@ async def suggest_query_mode(
     request: ChatRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
-    """
-    Analyze a query and suggest the optimal processing mode.
-    Returns suggested complexity level, reasoning, and estimated time.
-    Used for hybrid mode triggering (AI suggests, user confirms).
-    """
+    """Analyze query complexity via agents/analyzer node. Returns suggested mode (simple/research/deep)
+    with reasoning. Called by: frontend useChat.suggestMode before sending."""
     try:
         from app.services.agents.nodes.analyzer import analyze_query_node
 
@@ -486,18 +450,9 @@ async def agentic_chat_stream(
     request: ChatRequest,
     current_user: Optional[TokenPayload] = Depends(get_optional_user),
 ):
-    """
-    Stream a response using the agentic workflow.
-    Processes the query through: analysis -> search -> RAG -> synthesis.
-
-    SSE event types:
-    - type: "status" - Processing phase update (analyzing, searching, retrieving, synthesizing)
-    - type: "citation" - Citation data from search results
-    - type: "content" - Response text chunk
-    - type: "mode" - Detected/confirmed query mode
-    - type: "done" - Stream complete
-    - type: "error" - Error occurred
-    """
+    """Full agentic workflow SSE stream. Runs LangGraph: analyzer -> searcher -> retriever -> synthesizer.
+    Streams phase updates, citations, and LLM tokens. Saves to conversation_service if authenticated.
+    Called by: frontend useChat (/chat/agentic-stream)."""
     async def generate() -> AsyncGenerator[str, None]:
         try:
             import time

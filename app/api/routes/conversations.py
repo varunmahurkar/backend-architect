@@ -1,8 +1,7 @@
-"""
-Conversations API Routes
-REST endpoints for conversation persistence (CRUD + message management).
-All endpoints require authentication.
-"""
+"""Conversations API — CRUD + message management (auth required).
+Registered in: main.py. Calls: conversation_service (Supabase tables).
+Called by: frontend sidebar (list/select/rename/delete), page.tsx (create on first message),
+chat/agentic-stream (auto-save messages after response)."""
 
 import logging
 from typing import Optional, List
@@ -16,8 +15,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
-# === Request/Response Models ===
-
 class CreateConversationRequest(BaseModel):
     """Create conversation request."""
     title: str = Field(default="New Conversation", max_length=200)
@@ -29,18 +26,16 @@ class AddMessagesRequest(BaseModel):
 
 
 class UpdateTitleRequest(BaseModel):
-    """Update conversation title."""
+    """Request payload for renaming a conversation."""
     title: str = Field(..., min_length=1, max_length=200)
 
-
-# === Endpoints ===
 
 @router.post("")
 async def create_conversation(
     request: CreateConversationRequest,
     current_user: TokenPayload = Depends(get_current_user),
 ):
-    """Create a new conversation for the authenticated user."""
+    """Create new conversation record via conversation_service. Called by: frontend page.tsx on first message."""
     try:
         conversation = await conversation_service.create_conversation(
             user_id=current_user.sub,
@@ -58,7 +53,7 @@ async def list_conversations(
     limit: int = 50,
     offset: int = 0,
 ):
-    """List all conversations for the authenticated user, ordered by most recent."""
+    """List user conversations ordered by most recent via conversation_service. Called by: frontend sidebar on mount."""
     try:
         conversations = await conversation_service.list_conversations(
             user_id=current_user.sub,
@@ -76,7 +71,7 @@ async def get_conversation(
     conversation_id: str,
     current_user: TokenPayload = Depends(get_current_user),
 ):
-    """Load a conversation with all its messages."""
+    """Load conversation with all messages via conversation_service. Called by: frontend sidebar when selecting."""
     try:
         conversation = await conversation_service.get_conversation(
             conversation_id=conversation_id,
@@ -98,7 +93,7 @@ async def add_messages(
     request: AddMessagesRequest,
     current_user: TokenPayload = Depends(get_current_user),
 ):
-    """Append messages to an existing conversation."""
+    """Append user/assistant messages via conversation_service. Called by: agentic-stream after response completes."""
     try:
         messages = await conversation_service.add_messages(
             conversation_id=conversation_id,
@@ -119,7 +114,7 @@ async def update_title(
     request: UpdateTitleRequest,
     current_user: TokenPayload = Depends(get_current_user),
 ):
-    """Update conversation title."""
+    """Rename conversation via conversation_service. Called by: frontend sidebar rename action."""
     try:
         result = await conversation_service.update_conversation_title(
             conversation_id=conversation_id,
@@ -141,7 +136,7 @@ async def delete_conversation(
     conversation_id: str,
     current_user: TokenPayload = Depends(get_current_user),
 ):
-    """Delete a conversation and all its messages."""
+    """Delete conversation and messages via conversation_service. Called by: frontend sidebar delete action."""
     try:
         deleted = await conversation_service.delete_conversation(
             conversation_id=conversation_id,

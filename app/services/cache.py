@@ -1,9 +1,5 @@
-"""
-Simple In-Memory Response Cache
-Dict-based TTL cache for agentic query responses.
-Key: sha256(normalized_query + mode), Value: {response, citations, timestamp}
-Max 200 entries, 1hr TTL. No Redis needed for MVP.
-"""
+"""In-memory TTL cache for agentic query responses.
+Called by: agents/graph.py (cache lookup before processing, cache store after response)."""
 
 import hashlib
 import time

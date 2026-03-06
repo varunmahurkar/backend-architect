@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import Optional, List
 from app.config.settings import settings
@@ -44,6 +45,8 @@ try:
 except ImportError:
     raise ImportError("Supabase client is not installed. Install it with: pip install supabase")
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
@@ -59,19 +62,7 @@ def get_supabase_client():
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def signup(request: SignUpRequest) -> AuthResponse:
-    """
-    User sign up endpoint with password validation and secure hashing.
-
-    Creates a new user account with email, password, and username.
-    - Password: 8+ chars, uppercase, lowercase, number, special char
-    - Username: 6-18 chars, starts with letter, allows letters, numbers, _, -, .
-
-    Args:
-        request: SignUpRequest containing email, password, username, and optional full_name
-
-    Returns:
-        AuthResponse with user data and tokens
-    """
+    """Register new user. Validates password (password_service) and username (user_service), checks availability (bloom_filter_service), creates account via Supabase Auth, syncs profile to auth_users_table. Called by: frontend AuthModal."""
     try:
         # Validate password complexity
         pwd_valid, pwd_error, pwd_issues = validate_password(request.password)
@@ -164,17 +155,8 @@ async def signup(request: SignUpRequest) -> AuthResponse:
 
 @router.post("/signin", response_model=AuthResponse)
 async def signin(request: SignInRequest) -> AuthResponse:
-    """
-    User sign in endpoint.
-
-    Authenticates user with email and password, returns access token.
-
-    Args:
-        request: SignInRequest containing email and password
-
-    Returns:
-        AuthResponse with user data and tokens
-    """
+    """Authenticate user via Supabase Auth. Updates last_login_at via user_service.sync_user_signin,
+    fetches profile for username. Called by: frontend AuthModal."""
     try:
         supabase = get_supabase_client()
 
@@ -197,7 +179,7 @@ async def signin(request: SignInRequest) -> AuthResponse:
         try:
             sync_user_signin(user.id)
         except Exception as e:
-            print(f"Warning: Could not sync signin: {e}")
+            logger.warning(f"Could not sync signin: {e}")
 
         # Get user profile for username
         profile = get_user_by_uuid(user.id)
@@ -232,18 +214,12 @@ async def signin(request: SignInRequest) -> AuthResponse:
 async def signout(
     current_user: TokenPayload = Depends(get_current_user)
 ) -> dict:
-    """
-    User sign out endpoint.
-
-    Signs out the current user and updates auth_users_table.
-
-    Returns:
-        Success message
-    """
+    """Sign out user. Updates auth_users_table via user_service.sync_user_signout.
+    Called by: frontend useAuth hook."""
     try:
         sync_user_signout(current_user.sub)
     except Exception as e:
-        print(f"Warning: Could not sync signout: {e}")
+        logger.warning(f"Could not sync signout: {e}")
 
     return {
         "success": True,
@@ -253,17 +229,8 @@ async def signout(
 
 @router.post("/refresh-token")
 async def refresh_token(refresh_token: str) -> AuthResponse:
-    """
-    Refresh access token endpoint.
-    
-    Gets a new access token using a refresh token.
-    
-    Args:
-        refresh_token: Valid refresh token
-        
-    Returns:
-        AuthResponse with new access token
-    """
+    """Exchange refresh token for new access token via Supabase Auth.
+    Called by: frontend auth interceptor."""
     try:
         supabase = get_supabase_client()
         
@@ -305,14 +272,8 @@ async def refresh_token(refresh_token: str) -> AuthResponse:
 async def get_current_user_info(
     current_user: TokenPayload = Depends(get_current_user)
 ) -> UserResponse:
-    """
-    Get current authenticated user information from auth_users_table.
-
-    Requires valid JWT token in Authorization header.
-
-    Returns:
-        UserResponse with current user data
-    """
+    """Return current user info from auth_users_table via user_service.get_user_by_uuid.
+    Called by: frontend useAuth hook."""
     # Fetch user profile from auth_users_table
     profile = get_user_by_uuid(current_user.sub)
 
@@ -339,11 +300,8 @@ async def get_current_user_info(
 async def get_user_profile(
     current_user: TokenPayload = Depends(get_current_user)
 ) -> dict:
-    """
-    Get full user profile from auth_users_table.
-
-    Returns all profile fields including subscription status, verification status, etc.
-    """
+    """Return full profile with subscription and role data from auth_users_table.
+    Called by: frontend profile page."""
     profile = get_user_by_uuid(current_user.sub)
 
     if not profile:
@@ -376,11 +334,8 @@ async def update_user_profile(
     name: Optional[str] = None,
     profile_image_url: Optional[str] = None
 ) -> dict:
-    """
-    Update user profile in auth_users_table.
-
-    Only allows updating name and profile_image_url.
-    """
+    """Update name/avatar in auth_users_table via Supabase admin client.
+    Called by: frontend profile page."""
     from app.services.user_service import get_supabase_admin_client
     from datetime import datetime, timezone
 
@@ -419,15 +374,7 @@ async def update_user_profile(
 
 @router.post("/phone/send-otp", response_model=OTPResponse)
 async def send_phone_otp(request: PhoneSignUpRequest) -> OTPResponse:
-    """
-    Send OTP to phone number for authentication.
-
-    Args:
-        request: PhoneSignUpRequest containing phone number in E.164 format
-
-    Returns:
-        OTPResponse with success status
-    """
+    """Send SMS OTP via Supabase phone auth. Called by: frontend AuthModal phone tab."""
     try:
         supabase = get_supabase_client()
 
@@ -451,15 +398,7 @@ async def send_phone_otp(request: PhoneSignUpRequest) -> OTPResponse:
 
 @router.post("/phone/verify-otp", response_model=AuthResponse)
 async def verify_phone_otp(request: PhoneVerifyRequest) -> AuthResponse:
-    """
-    Verify phone OTP and authenticate user.
-
-    Args:
-        request: PhoneVerifyRequest containing phone and OTP
-
-    Returns:
-        AuthResponse with user data and tokens
-    """
+    """Verify phone OTP and return session tokens. Called by: frontend AuthModal phone verification."""
     try:
         supabase = get_supabase_client()
 
@@ -503,29 +442,10 @@ async def verify_phone_otp(request: PhoneVerifyRequest) -> AuthResponse:
         )
 
 
-# =============================================================================
-# Password Validation Endpoints
-# =============================================================================
-
 @router.post("/validate-password", response_model=PasswordValidationResponse)
 async def validate_password_endpoint(request: PasswordValidationRequest) -> PasswordValidationResponse:
-    """
-    Validate password strength and complexity.
-
-    Checks for:
-    - Minimum 8 characters
-    - At least one uppercase letter
-    - At least one lowercase letter
-    - At least one number
-    - At least one special character
-    - No sequential or repeated patterns
-
-    Args:
-        request: PasswordValidationRequest with password to validate
-
-    Returns:
-        PasswordValidationResponse with validity, score, level, and issues
-    """
+    """Check password strength via password_service.validate_password and calculate_password_strength.
+    Called by: frontend signup form (real-time validation)."""
     is_valid, error_msg, issues = validate_password(request.password)
     strength = calculate_password_strength(request.password)
 
@@ -538,24 +458,10 @@ async def validate_password_endpoint(request: PasswordValidationRequest) -> Pass
     )
 
 
-# =============================================================================
-# Username Availability & Bloom Filter Endpoints
-# =============================================================================
-
 @router.post("/check-username", response_model=UsernameAvailabilityResponse)
 async def check_username_endpoint(request: UsernameCheckRequest) -> UsernameAvailabilityResponse:
-    """
-    Check username availability using Bloom filter + database verification.
-
-    Fast check using Bloom filter first, then confirms with database.
-    Returns suggestions if username is taken.
-
-    Args:
-        request: UsernameCheckRequest with username to check
-
-    Returns:
-        UsernameAvailabilityResponse with availability status and suggestions
-    """
+    """Check username availability via bloom_filter_service (fast) then DB verification.
+    Returns suggestions if taken. Called by: frontend signup form."""
     # Validate format first
     is_valid, error_msg = validate_username(request.username)
     if not is_valid:
@@ -571,7 +477,7 @@ async def check_username_endpoint(request: UsernameCheckRequest) -> UsernameAvai
         available, message = check_username_availability_definitive(request.username)
     except Exception as e:
         # If check fails, assume available (DB will enforce uniqueness on signup)
-        print(f"Username check failed: {e}")
+        logger.warning(f"Username check failed: {e}")
         available = True
         message = "Username appears available"
 
@@ -592,17 +498,8 @@ async def check_username_endpoint(request: UsernameCheckRequest) -> UsernameAvai
 
 @router.get("/check-username/{username}", response_model=UsernameAvailabilityResponse)
 async def check_username_get(username: str) -> UsernameAvailabilityResponse:
-    """
-    Quick username availability check (GET endpoint for easier use).
-
-    Uses Bloom filter for fast probabilistic check.
-
-    Args:
-        username: Username to check
-
-    Returns:
-        UsernameAvailabilityResponse with availability status
-    """
+    """GET version of username check for simpler client usage. Same logic as POST check_username.
+    Called by: frontend signup form (debounced input)."""
     # Validate format first
     is_valid, error_msg = validate_username(username)
     if not is_valid:
@@ -618,7 +515,7 @@ async def check_username_get(username: str) -> UsernameAvailabilityResponse:
         available, message = check_username_availability_definitive(username)
     except Exception as e:
         # If check fails, assume available (DB will enforce uniqueness on signup)
-        print(f"Username check failed: {e}")
+        logger.warning(f"Username check failed: {e}")
         available = True
         message = "Username appears available"
 
@@ -639,15 +536,8 @@ async def check_username_get(username: str) -> UsernameAvailabilityResponse:
 
 @router.get("/generate-username", response_model=RandomUsernameResponse)
 async def generate_username_endpoint() -> RandomUsernameResponse:
-    """
-    Generate a random available username.
-
-    Creates a unique username using adjective_noun + number format.
-    Verifies availability using Bloom filter.
-
-    Returns:
-        RandomUsernameResponse with generated username and additional suggestions
-    """
+    """Generate random available username via bloom_filter_service. Returns primary + 4 suggestions.
+    Called by: frontend signup form."""
     try:
         username = generate_random_username()
 
@@ -698,16 +588,8 @@ async def generate_username_endpoint() -> RandomUsernameResponse:
 
 @router.get("/bloom-filter", response_model=BloomFilterResponse)
 async def get_bloom_filter_endpoint() -> BloomFilterResponse:
-    """
-    Get Bloom filter data for client-side username checking.
-
-    Client can use this to perform instant username availability checks
-    without server round-trips. Note: Bloom filters have false positives,
-    so final verification should still be done server-side.
-
-    Returns:
-        BloomFilterResponse with encoded filter data and metadata
-    """
+    """Export Bloom filter as base64 for client-side instant username checking without round-trips.
+    Called by: frontend AuthModal on mount."""
     from datetime import datetime, timezone
 
     try:
@@ -721,7 +603,7 @@ async def get_bloom_filter_endpoint() -> BloomFilterResponse:
         )
     except Exception as e:
         # Return empty filter if initialization fails
-        print(f"Bloom filter fetch failed: {e}")
+        logger.warning(f"Bloom filter fetch failed: {e}")
         import base64
         import math
         empty_filter = base64.b64encode(bytearray(math.ceil(100000 / 8))).decode('utf-8')

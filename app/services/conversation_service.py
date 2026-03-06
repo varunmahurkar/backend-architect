@@ -1,8 +1,6 @@
-"""
-Conversation Persistence Service
-CRUD operations for conversations and messages using Supabase service_role client.
-Bypasses RLS since we validate user_id at the application level.
-"""
+"""Conversation service — CRUD for conversations and messages via Supabase service_role.
+Called by: conversations.py routes (list/create/get/update/delete),
+chat.py agentic-stream (auto-save after response)."""
 
 import logging
 from typing import Optional, List, Dict, Any

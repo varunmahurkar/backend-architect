@@ -1,8 +1,7 @@
-"""
-Bloom Filter service for fast username availability checking.
-Uses multiple hash functions for low false positive rate.
-"""
+"""Bloom filter for fast probabilistic username availability checking.
+Called by: auth routes (signup, check_username, generate_username, bloom_filter endpoint)."""
 import hashlib
+import logging
 import math
 import base64
 import random
@@ -10,6 +9,8 @@ import string
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from app.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 try:
     from supabase import create_client
@@ -71,11 +72,7 @@ class BloomFilter:
         self.last_updated = datetime.now(timezone.utc)
 
     def might_contain(self, item: str) -> bool:
-        """
-        Check if item might be in the filter.
-        Returns True if possibly present (may be false positive).
-        Returns False if definitely not present.
-        """
+        """Check if item might be in the filter (probabilistic)."""
         for hash_val in self._get_hash_values(item):
             if not self._get_bit(hash_val):
                 return False
@@ -117,10 +114,7 @@ def get_supabase_client():
 
 
 def get_supabase_admin_client():
-    """
-    Get Supabase client with service role key (for database operations).
-    This bypasses Row Level Security (RLS).
-    """
+    """Get Supabase client with service role key (bypasses RLS)."""
     if not settings.supabase_url:
         raise ValueError("Supabase URL not configured")
 
@@ -133,10 +127,7 @@ def get_supabase_admin_client():
 
 
 def _load_usernames_into_filter(bf: BloomFilter) -> int:
-    """
-    Load all usernames from database into bloom filter.
-    Returns 0 if database is unavailable (filter will be empty but functional).
-    """
+    """Load all usernames from database into bloom filter."""
     try:
         supabase = get_supabase_admin_client()
         # Fetch all usernames from auth_users_table
@@ -151,19 +142,16 @@ def _load_usernames_into_filter(bf: BloomFilter) -> int:
         return count
     except ValueError as e:
         # Supabase not configured - this is OK, filter will be empty
-        print(f"Supabase not configured, using empty Bloom filter: {e}")
+        logger.info(f"Supabase not configured, using empty Bloom filter: {e}")
         return 0
     except Exception as e:
         # Database error - this is OK, filter will be empty
-        print(f"Could not load usernames into Bloom filter: {e}")
+        logger.warning(f"Could not load usernames into Bloom filter: {e}")
         return 0
 
 
 def get_username_bloom_filter(force_refresh: bool = False) -> BloomFilter:
-    """
-    Get or create the username bloom filter.
-    Refreshes periodically to stay in sync with database.
-    """
+    """Get or create the username bloom filter (auto-refreshes)."""
     global _username_bloom_filter, _last_refresh
 
     now = datetime.now(timezone.utc)
@@ -180,7 +168,7 @@ def get_username_bloom_filter(force_refresh: bool = False) -> BloomFilter:
         _username_bloom_filter = BloomFilter()
         count = _load_usernames_into_filter(_username_bloom_filter)
         _last_refresh = now
-        print(f"Bloom filter refreshed with {count} usernames")
+        logger.info(f"Bloom filter refreshed with {count} usernames")
 
     return _username_bloom_filter
 
@@ -192,14 +180,8 @@ def add_username_to_filter(username: str):
 
 
 def check_username_availability_fast(username: str) -> Tuple[bool, str]:
-    """
-    Fast username availability check using Bloom filter.
-
-    Returns:
-        (possibly_available, message)
-        - If False: Username might be taken (Bloom filter match)
-        - If True: Username is likely available (not in Bloom filter)
-    """
+    """Bloom filter only check — fast but may have false positives.
+    Called by: auth.generate_username for suggestion validation."""
     try:
         bf = get_username_bloom_filter()
 
@@ -209,23 +191,13 @@ def check_username_availability_fast(username: str) -> Tuple[bool, str]:
             return True, "Username appears available"
     except Exception as e:
         # If Bloom filter fails, assume available (DB will verify)
-        print(f"Bloom filter fast check failed: {e}")
+        logger.warning(f"Bloom filter fast check failed: {e}")
         return True, "Username appears available"
 
 
 def check_username_availability_definitive(username: str) -> Tuple[bool, str]:
-    """
-    Username availability check using Bloom filter + optional DB verification.
-
-    Strategy:
-    1. Check Bloom filter first (fast, probabilistic)
-    2. If Bloom filter says "not in set", username is definitely available
-    3. If Bloom filter says "might be in set", try DB verification
-    4. If DB verification fails, still allow (let actual insert handle uniqueness)
-
-    Returns:
-        (available, message)
-    """
+    """Bloom filter + DB verification — authoritative availability check.
+    Called by: auth.signup and auth.check_username."""
     username_lower = username.lower()
 
     # First, quick bloom filter check
@@ -236,7 +208,7 @@ def check_username_availability_definitive(username: str) -> Tuple[bool, str]:
             return True, "Username is available"
     except Exception as e:
         # Bloom filter failed - skip to DB check or allow
-        print(f"Bloom filter check failed: {e}")
+        logger.warning(f"Bloom filter check failed: {e}")
 
     # Bloom filter says might exist (or failed) - try DB verification
     try:
@@ -253,21 +225,18 @@ def check_username_availability_definitive(username: str) -> Tuple[bool, str]:
 
     except ValueError as e:
         # Supabase not configured - allow, actual signup will fail if there's an issue
-        print(f"Supabase not configured (allowing): {e}")
+        logger.info(f"Supabase not configured (allowing): {e}")
         return True, "Username appears available"
     except Exception as e:
         # DB check failed - allow signup, let actual insert handle uniqueness
         # This is permissive: Bloom filter said "maybe", but we can't verify
         # Better to allow and let DB constraint catch duplicates
-        print(f"DB username check failed (allowing): {e}")
+        logger.warning(f"DB username check failed (allowing): {e}")
         return True, "Username appears available"
 
 
 def get_bloom_filter_data() -> dict:
-    """
-    Get bloom filter data for client-side checking.
-    Client can use this to check usernames without server round-trips.
-    """
+    """Export filter as base64 for client-side checking. Called by: auth.get_bloom_filter_endpoint."""
     bf = get_username_bloom_filter()
 
     return {
@@ -312,9 +281,8 @@ def generate_random_username() -> str:
 
 
 def generate_username_suggestions(base_username: str, count: int = 5) -> List[str]:
-    """
-    Generate username suggestions based on a taken username.
-    """
+    """Generate username suggestions when a username is taken (adds numbers, prefixes, random).
+    Called by: auth.check_username, auth.signup."""
     suggestions = []
     base = base_username.lower()
 
