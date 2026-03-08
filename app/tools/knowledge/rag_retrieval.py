@@ -31,11 +31,24 @@ from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
 @tool
 async def rag_retrieval(query: str, user_id: str = "") -> str:
     """Retrieve relevant context from vector stores for a given query. Returns JSON array of context chunks."""
-    from app.services.agents.nodes.retriever import rag_retrieval_node
+    try:
+        from app.services.agents.nodes.retriever import rag_retrieval_node
 
-    # Build a minimal state dict to pass to the node
-    state = {"query": query, "user_id": user_id if user_id else None}
-    result = await rag_retrieval_node(state)
+        # Build a minimal state dict to pass to the node
+        state = {"query": query, "user_id": user_id if user_id else None}
+        result = await rag_retrieval_node(state)
 
-    rag_context = result.get("rag_context", [])
-    return json.dumps(rag_context, ensure_ascii=False, default=str)
+        rag_context = result.get("rag_context", [])
+
+        if not rag_context:
+            return json.dumps({
+                "results": [],
+                "message": "No relevant documents found. Upload documents or configure vector stores to enable RAG retrieval.",
+            })
+
+        return json.dumps(rag_context, ensure_ascii=False, default=str)
+    except Exception as e:
+        return json.dumps({
+            "results": [],
+            "message": f"RAG retrieval unavailable: {str(e)}. Ensure vector stores are configured.",
+        })

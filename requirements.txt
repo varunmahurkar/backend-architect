@@ -35,3 +35,30 @@ arxiv>=2.1.0
 # YouTube
 youtube-transcript-api>=0.6.2
 google-api-python-client>=2.147.0
+
+# PDF Parsing
+PyMuPDF>=1.24.0
+pdfplumber>=0.11.0
+
+# Image Processing
+Pillow>=10.0.0
+
+# Chart Generation
+matplotlib>=3.8.0
+plotly>=5.18.0
+kaleido>=0.2.1
+
+# Translation (using LLM + MyMemory API — googletrans conflicts with httpx)
+
+# Math & Symbolic Computation
+sympy>=1.12
+
+# Data Analysis
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# Knowledge Graph (in-memory MVP)
+networkx>=3.0
+
+# Code Execution (Docker sandbox)
+docker>=7.0.0
