@@ -62,3 +62,9 @@ networkx>=3.0
 
 # Code Execution (Docker sandbox)
 docker>=7.0.0
+
+# Document Export
+python-docx>=1.1.0
+
+# SQL on DataFrames
+# (sqlite3 is stdlib, pandas already listed above)
