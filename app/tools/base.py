@@ -1,6 +1,7 @@
 """Tool Base — ToolMetadata, ToolStatus, and @nurav_tool decorator."""
 
 import functools
+import json
 import logging
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -46,6 +47,14 @@ class ToolMetadata:
         d = asdict(self)
         d["status"] = self.status.value
         return d
+
+
+def tool_error(message: str, code: str = "INTERNAL", suggestion: str = "") -> str:
+    """Return a standardised tool error JSON string."""
+    payload: dict = {"error": message, "code": code}
+    if suggestion:
+        payload["suggestion"] = suggestion
+    return json.dumps(payload)
 
 
 def nurav_tool(metadata: ToolMetadata) -> Callable:
