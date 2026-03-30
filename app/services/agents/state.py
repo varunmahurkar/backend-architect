@@ -18,7 +18,7 @@ class SourceResult(TypedDict, total=False):
 
 
 class CitationEntry(TypedDict, total=False):
-    """Citation reference for the final response"""
+    """Citation reference for the final response — includes quality metadata."""
     id: int
     url: str
     root_url: str
@@ -26,6 +26,9 @@ class CitationEntry(TypedDict, total=False):
     snippet: str
     source_type: str
     favicon_url: str
+    quality_score: int        # 0-100 from source_quality.py
+    credibility_tier: str     # "authoritative" | "reputable" | "community" | "general"
+    published_at: str         # ISO 8601 publish date
 
 
 class AgentState(TypedDict, total=False):
@@ -42,6 +45,9 @@ class AgentState(TypedDict, total=False):
     web_results: List[SourceResult]
     academic_results: List[SourceResult]
     youtube_results: List[SourceResult]
+    wikipedia_results: List[SourceResult]   # from wikipedia_source.py
+    news_results: List[SourceResult]        # from news_source.py
+    reddit_results: List[SourceResult]      # from reddit_source.py
     rag_context: List[Dict]
     citations: List[CitationEntry]
     synthesized_response: Optional[str]
@@ -53,3 +59,7 @@ class AgentState(TypedDict, total=False):
     system_prompt: Optional[str]
     start_time: str
     errors: List[str]
+    # Phase 4A — Personalization (opt-in via use_personalization flag)
+    use_personalization: bool               # enabled by user toggle in frontend
+    personalization_context: Optional[Dict] # KG nodes/edges relevant to query
+    user_memory: Optional[Dict]             # recent topics, preferences from memory_recall
