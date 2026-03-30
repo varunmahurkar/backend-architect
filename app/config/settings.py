@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     # YouTube Data API
     youtube_api_key: Optional[str] = None
 
+    # Redis Cache (optional — falls back to in-memory if not set)
+    redis_url: Optional[str] = None
+
+    # News API (optional — falls back to DuckDuckGo news if not set)
+    newsapi_key: Optional[str] = None
+
+    # Real-time data APIs (optional — all have free no-key fallbacks)
+    alpha_vantage_key: Optional[str] = None  # stocks (free tier: 25 req/day)
+
     # Agentic Model Overrides (cost-efficient models for internal operations)
     classifier_provider: str = "openai"
     classifier_model: str = "gpt-4o-mini"

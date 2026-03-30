@@ -3,8 +3,10 @@ Tools API routes — Serves the tool manifest for the frontend.
 Provides endpoints to list, filter, and execute tools.
 """
 
+import asyncio
 import json
 import logging
+import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Any
@@ -31,6 +33,7 @@ class ToolExecuteResponse(BaseModel):
     tool_name: str
     result: str
     status: str
+    execution_ms: Optional[int] = None
 
 
 @router.get("", response_model=ToolManifestResponse)
@@ -80,17 +83,35 @@ async def execute_tool(request: ToolExecuteRequest):
     if tool_meta and tool_meta.get("status") == "coming_soon":
         logger.info(f"Executing coming_soon tool '{request.tool_name}' (mock data)")
 
+    # Derive per-tool timeout: avg_response_ms × 3, clamped to [10s, 120s]
+    avg_ms = (tool_meta or {}).get("avg_response_ms") or 10000
+    timeout_s = min(120.0, max(10.0, (avg_ms * 3) / 1000))
+
+    start = time.monotonic()
     try:
-        result = await tool_fn.ainvoke(request.inputs)
+        result = await asyncio.wait_for(tool_fn.ainvoke(request.inputs), timeout=timeout_s)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
         return ToolExecuteResponse(
             tool_name=request.tool_name,
             result=str(result),
             status="success",
+            execution_ms=elapsed_ms,
+        )
+    except asyncio.TimeoutError:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.warning(f"Tool '{request.tool_name}' timed out after {timeout_s:.0f}s")
+        return ToolExecuteResponse(
+            tool_name=request.tool_name,
+            result=json.dumps({"error": f"Tool timed out after {timeout_s:.0f}s", "code": "TIMEOUT", "tool_name": request.tool_name}),
+            status="timeout",
+            execution_ms=elapsed_ms,
         )
     except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
         logger.error(f"Tool execution failed for '{request.tool_name}': {e}")
         return ToolExecuteResponse(
             tool_name=request.tool_name,
-            result=json.dumps({"error": str(e)}),
+            result=json.dumps({"error": str(e), "code": "INTERNAL"}),
             status="error",
+            execution_ms=elapsed_ms,
         )
