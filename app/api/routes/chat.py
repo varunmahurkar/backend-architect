@@ -124,6 +124,8 @@ class ChatRequest(BaseModel):
     mode: Optional[Literal["simple", "research", "deep"]] = Field(None, description="Confirmed query mode")
     # Conversation persistence
     conversation_id: Optional[str] = Field(None, description="Existing conversation ID to append to")
+    # Phase 4A: Personalization opt-in toggle
+    use_personalization: bool = Field(default=False, description="Enable KG + memory personalisation (user opt-in)")
 
 
 class ChatResponse(BaseModel):
@@ -458,14 +460,17 @@ async def agentic_chat_stream(
             import time
             from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
             from app.services.agents.graph import get_agent_graph
-            from app.services.cache import response_cache
 
             graph = get_agent_graph()
             start_time = time.monotonic()
             query_mode = request.mode or "simple"
 
+            # Use Redis-backed cache (falls back to in-memory if unconfigured)
+            from app.services.redis_cache import redis_cache
+            response_cache = redis_cache
+
             # Check cache first
-            cached = response_cache.get(request.message, query_mode)
+            cached = await response_cache.get(request.message, query_mode)
             if cached:
                 yield _sse_event("status", {"status": "cached"})
                 # Stream cached citations
@@ -488,6 +493,9 @@ async def agentic_chat_stream(
                 "web_results": [],
                 "academic_results": [],
                 "youtube_results": [],
+                "wikipedia_results": [],
+                "news_results": [],
+                "reddit_results": [],
                 "rag_context": [],
                 "citations": [],
                 "synthesized_response": None,
@@ -502,6 +510,10 @@ async def agentic_chat_stream(
                 "system_prompt": request.system_prompt,
                 "start_time": datetime.now(timezone.utc).isoformat(),
                 "errors": [],
+                # Phase 4A: personalisation opt-in
+                "use_personalization": request.use_personalization,
+                "personalization_context": None,
+                "user_memory": None,
             }
 
             # Send initial status
@@ -580,9 +592,9 @@ async def agentic_chat_stream(
                         full_response += token
                         yield _sse_event("content", {"content": token})
 
-                # Store response in cache and final state
+                # Store response in Redis cache and final state
                 final_state["synthesized_response"] = full_response
-                response_cache.put(
+                await response_cache.put(
                     request.message,
                     query_mode,
                     full_response,
@@ -623,6 +635,56 @@ async def agentic_chat_stream(
                     asyncio.create_task(validate_response(request.message, final_state["synthesized_response"]))
                 except Exception as val_err:
                     logger.debug(f"Validation setup failed: {val_err}")
+
+            # Emit confidence score after full response is built
+            if final_state.get("synthesized_response") and final_state.get("citations"):
+                try:
+                    from app.services.confidence_scorer import compute_confidence
+                    confidence = compute_confidence(
+                        final_state["synthesized_response"],
+                        final_state["citations"],
+                    )
+                    yield _sse_event("confidence", confidence)
+                except Exception as conf_err:
+                    logger.debug(f"Confidence scoring failed: {conf_err}")
+
+            # Phase 4B: Background pgvector upsert + memory recording (non-blocking)
+            if current_user and final_state.get("synthesized_response"):
+                import asyncio as _asyncio
+
+                async def _embed_and_store():
+                    try:
+                        from app.services.vector_stores.conversation_store import ConversationVectorStore
+                        from app.services.vector_stores.base import Document
+                        import uuid
+                        store = ConversationVectorStore()
+                        qa_text = f"Q: {request.message}\nA: {final_state['synthesized_response'][:2000]}"
+                        doc = Document(
+                            id=str(uuid.uuid4()),
+                            content=qa_text,
+                            metadata={
+                                "user_id": current_user.sub,
+                                "conversation_id": request.conversation_id or "",
+                                "role": "qa_pair",
+                            },
+                        )
+                        await store.upsert([doc])
+                    except Exception as emb_err:
+                        logger.debug(f"pgvector upsert failed (non-fatal): {emb_err}")
+
+                async def _record_memory():
+                    try:
+                        from app.tools.knowledge.memory_recall import record_interaction
+                        topics = final_state.get("query_domains") or []
+                        intent = final_state.get("query_intent", "")
+                        if intent:
+                            topics.append(intent)
+                        record_interaction(current_user.sub, request.message, topics or None)
+                    except Exception as mem_err:
+                        logger.debug(f"Memory recording failed (non-fatal): {mem_err}")
+
+                _asyncio.create_task(_embed_and_store())
+                _asyncio.create_task(_record_memory())
 
             # Generate follow-up questions (non-blocking, skip on failure)
             if final_state.get("synthesized_response"):

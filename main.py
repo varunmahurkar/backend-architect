@@ -10,6 +10,7 @@ from app.api.routes.chat import router as chat_router
 from app.api.routes.crawler import router as crawler_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.tools import router as tools_router
+from app.api.routes.live_data import router as live_data_router
 from app.tools.registry import tool_registry
 
 logger = logging.getLogger(__name__)
@@ -17,9 +18,14 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: scan and register all tools
+    # Startup: scan tool registry + connect Redis cache
     tool_registry.scan()
     logger.info(f"Tool registry ready: {tool_registry.count} tools registered")
+
+    from app.services.redis_cache import redis_cache
+    await redis_cache.connect()
+    logger.info(f"Cache backend: {'Redis' if redis_cache.is_redis else 'in-memory'}")
+
     yield
     # Shutdown: cleanup if needed
 
@@ -87,6 +93,7 @@ app.include_router(chat_router)
 app.include_router(crawler_router)
 app.include_router(conversations_router)
 app.include_router(tools_router)
+app.include_router(live_data_router)
 
 @app.get("/")
 def read_root():

@@ -24,15 +24,31 @@ class TriggerMode(str, Enum):
 # === Citation Models ===
 
 class Citation(BaseModel):
-    """Single citation reference."""
+    """Single citation reference with quality metadata."""
     id: int = Field(..., description="Citation number (1, 2, 3...)")
     url: str = Field(..., description="Full URL of the cited page")
     root_url: str = Field(..., description="Root domain (e.g., https://example.com)")
     title: str = Field(..., description="Page title")
     snippet: Optional[str] = Field(None, description="Relevant text snippet from source")
     favicon_url: Optional[str] = Field(None, description="Site favicon URL")
+    # Source type for grouping in the UI
+    source_type: str = Field(default="web", description="web | arxiv | youtube | wikipedia | news | reddit")
+    # Quality metadata (populated by source_quality.py)
+    quality_score: int = Field(default=0, description="Source quality 0-100 (higher = more authoritative)")
+    credibility_tier: str = Field(default="general", description="authoritative | reputable | community | general")
+    published_at: str = Field(default="", description="ISO 8601 publish date if known")
     crawled_at: datetime = Field(default_factory=datetime.utcnow)
     crawler_type: CrawlerType = Field(default=CrawlerType.AUTO)
+
+
+class ConfidenceScore(BaseModel):
+    """Answer confidence assessment emitted after synthesis."""
+    score: int = Field(..., description="Confidence 0-100")
+    label: str = Field(..., description="High | Medium | Low | Uncertain")
+    cited_sources: int = Field(..., description="Number of distinct sources cited in response")
+    total_sources: int = Field(..., description="Total sources available")
+    coverage_ratio: float = Field(default=0.0)
+    avg_source_quality: float = Field(default=0.0)
 
 
 class CitationList(BaseModel):
@@ -127,9 +143,10 @@ class WebChatResponse(BaseModel):
 
 
 class StreamChunk(BaseModel):
-    """Streaming response chunk."""
-    type: Literal["content", "citation", "status", "done", "error"]
+    """Streaming response chunk — all SSE event types."""
+    type: Literal["content", "citation", "status", "done", "error", "confidence", "mode", "followup"]
     content: Optional[str] = None
     citation: Optional[Citation] = None
-    status: Optional[str] = None  # "searching", "reading", "generating"
+    status: Optional[str] = None      # "searching" | "reading" | "generating" | ...
     error: Optional[str] = None
+    confidence: Optional[ConfidenceScore] = None  # emitted once after "done"
