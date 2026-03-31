@@ -9,15 +9,21 @@ import time
 import asyncio
 
 from langchain_core.tools import tool
-from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
+from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample, tool_error
 
 logger = logging.getLogger(__name__)
+
+try:
+    import docker as _docker_module
+    DOCKER_AVAILABLE = True
+except ImportError:
+    DOCKER_AVAILABLE = False
 
 NODE_IMAGE = "node:20-slim"
 
 
-async def _run_js_docker(code: str, timeout: int) -> dict:
-    """Execute JS code in a Docker container."""
+def _run_js_docker_sync(code: str, timeout: int) -> dict:
+    """Synchronous Docker execution for JS — runs in a thread via asyncio.to_thread."""
     import docker
     from docker.errors import ImageNotFound
 
@@ -47,7 +53,12 @@ async def _run_js_docker(code: str, timeout: int) -> dict:
         return {"stdout": stdout[:10000], "stderr": stderr[:5000], "execution_time_ms": int((time.time()-start)*1000), "success": exit_code == 0}
     except ImageNotFound:
         client.images.pull(NODE_IMAGE)
-        return await _run_js_docker(code, timeout)
+        return _run_js_docker_sync(code, timeout)
+
+
+async def _run_js_docker(code: str, timeout: int) -> dict:
+    """Async wrapper — offloads blocking Docker calls to a thread pool."""
+    return await asyncio.to_thread(_run_js_docker_sync, code, timeout)
 
 
 async def _run_js_subprocess(code: str, timeout: int) -> dict:
@@ -92,15 +103,19 @@ async def _run_js_subprocess(code: str, timeout: int) -> dict:
 async def javascript_executor(code: str, timeout: int = 10) -> str:
     """Execute JavaScript code in a sandboxed environment."""
     if not code.strip():
-        return json.dumps({"error": "No code provided."})
-    try:
-        import docker
-        docker.from_env().ping()
-        result = await _run_js_docker(code, timeout)
-        result["method"] = "docker"
-        return json.dumps(result)
-    except Exception:
-        pass
+        return tool_error("No code provided.", code="INVALID_INPUT", suggestion="Provide JavaScript code to execute.")
+
+    if DOCKER_AVAILABLE:
+        try:
+            await asyncio.to_thread(_docker_module.from_env().ping)
+            result = await _run_js_docker(code, timeout)
+            result["method"] = "docker"
+            return json.dumps(result)
+        except Exception as e:
+            logger.info(f"[javascript_executor] Docker unavailable ({e}), falling back to subprocess")
+    else:
+        logger.info("[javascript_executor] docker package not installed, falling back to subprocess")
+
     result = await _run_js_subprocess(code, timeout)
     result["method"] = "subprocess"
     return json.dumps(result)
