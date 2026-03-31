@@ -7,9 +7,14 @@ import json
 import logging
 
 from langchain_core.tools import tool
-from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
+from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample, tool_error
 
 logger = logging.getLogger(__name__)
+
+_JSONPATH_MAX_DEPTH = 20
+_JSONPATH_MAX_RESULTS = 1000
+_FLATTEN_MAX_DEPTH = 10
+_FLATTEN_MAX_KEYS = 500
 
 
 def _extract_schema(obj, path: str = "$") -> dict:
@@ -27,21 +32,28 @@ def _extract_schema(obj, path: str = "$") -> dict:
         return {"type": type(obj).__name__, "path": path}
 
 
-def _flatten(obj, parent_key: str = "", sep: str = ".") -> dict:
-    """Flatten a nested JSON object."""
+def _flatten(obj, parent_key: str = "", sep: str = ".", _depth: int = 0) -> dict:
+    """Flatten a nested JSON object with depth limit."""
     items = {}
+    if _depth >= _FLATTEN_MAX_DEPTH or len(items) >= _FLATTEN_MAX_KEYS:
+        items[parent_key or "value"] = str(obj)
+        return items
     if isinstance(obj, dict):
         for k, v in obj.items():
+            if len(items) >= _FLATTEN_MAX_KEYS:
+                break
             new_key = f"{parent_key}{sep}{k}" if parent_key else k
             if isinstance(v, (dict, list)):
-                items.update(_flatten(v, new_key, sep))
+                items.update(_flatten(v, new_key, sep, _depth + 1))
             else:
                 items[new_key] = v
     elif isinstance(obj, list):
         for i, v in enumerate(obj[:50]):  # Limit array expansion
+            if len(items) >= _FLATTEN_MAX_KEYS:
+                break
             new_key = f"{parent_key}[{i}]"
             if isinstance(v, (dict, list)):
-                items.update(_flatten(v, new_key, sep))
+                items.update(_flatten(v, new_key, sep, _depth + 1))
             else:
                 items[new_key] = v
     else:
@@ -55,7 +67,9 @@ def _jsonpath_query(obj, path: str) -> tuple[list, list]:
     results = []
     paths = []
 
-    def search(current, parts, current_path):
+    def search(current, parts, current_path, depth=0):
+        if depth > _JSONPATH_MAX_DEPTH or len(results) >= _JSONPATH_MAX_RESULTS:
+            return
         if not parts:
             results.append(current)
             paths.append(current_path)
@@ -65,29 +79,29 @@ def _jsonpath_query(obj, path: str) -> tuple[list, list]:
         rest = parts[1:]
 
         if part == "$":
-            search(current, rest, "$")
+            search(current, rest, "$", depth + 1)
         elif part == "*":
             if isinstance(current, dict):
                 for k, v in current.items():
-                    search(v, rest, f"{current_path}.{k}")
+                    search(v, rest, f"{current_path}.{k}", depth + 1)
             elif isinstance(current, list):
                 for i, v in enumerate(current):
-                    search(v, rest, f"{current_path}[{i}]")
+                    search(v, rest, f"{current_path}[{i}]", depth + 1)
         elif part.startswith("[") and part.endswith("]"):
             idx_str = part[1:-1]
             if idx_str == "*":
                 if isinstance(current, list):
                     for i, v in enumerate(current):
-                        search(v, rest, f"{current_path}[{i}]")
+                        search(v, rest, f"{current_path}[{i}]", depth + 1)
             else:
                 try:
                     idx = int(idx_str)
                     if isinstance(current, list) and 0 <= idx < len(current):
-                        search(current[idx], rest, f"{current_path}[{idx}]")
+                        search(current[idx], rest, f"{current_path}[{idx}]", depth + 1)
                 except ValueError:
                     pass
         elif isinstance(current, dict) and part in current:
-            search(current[part], rest, f"{current_path}.{part}")
+            search(current[part], rest, f"{current_path}.{part}", depth + 1)
 
     # Tokenize path
     import re
@@ -127,7 +141,7 @@ def _jsonpath_query(obj, path: str) -> tuple[list, list]:
 async def json_explorer(data: str, query: str = "", operations: str = "explore") -> str:
     """Explore and query JSON data."""
     if not data.strip():
-        return json.dumps({"error": "No JSON data provided."})
+        return tool_error("No JSON data provided.", "INVALID_INPUT", "Provide a JSON string or URL.")
 
     try:
         # Parse JSON
@@ -172,12 +186,12 @@ async def json_explorer(data: str, query: str = "", operations: str = "explore")
     # Flatten
     if "flatten" in ops:
         flattened = _flatten(obj)
-        result["flattened"] = {k: v for k, v in list(flattened.items())[:200]}
+        result["flattened"] = dict(list(flattened.items())[:_FLATTEN_MAX_KEYS])
         result["flattened_keys"] = len(flattened)
 
-    # All key paths
+    # All key paths (capped at 200)
     if "explore" in ops:
         flat = _flatten(obj)
-        result["all_paths"] = list(flat.keys())[:100]
+        result["all_paths"] = list(flat.keys())[:200]
 
     return json.dumps(result, default=str)

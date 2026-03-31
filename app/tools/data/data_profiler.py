@@ -3,12 +3,13 @@ Data Profiler Tool — Comprehensive dataset profiling.
 Uses pandas for statistics, distributions, correlations, and data quality scoring.
 """
 
+import asyncio
 import json
 import logging
 import io
 
 from langchain_core.tools import tool
-from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
+from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +63,15 @@ def _profile_dataframe(df, sample_size: int = 0) -> dict:
 
         column_stats[col] = stats
 
-    # Correlation matrix (numeric only)
+    # Correlation matrix (numeric only) — capped at 100 pairs
     numeric_cols = df.select_dtypes(include=[float, int]).columns.tolist()
     correlations = {}
     if len(numeric_cols) >= 2:
         corr_matrix = df[numeric_cols].corr()
-        # Only keep strong correlations (|r| > 0.5)
         strong = {}
         for i, c1 in enumerate(numeric_cols):
             for j, c2 in enumerate(numeric_cols):
-                if i < j:
+                if i < j and len(strong) < 100:
                     r = corr_matrix.loc[c1, c2]
                     if not pd.isna(r) and abs(r) > 0.5:
                         strong[f"{c1}↔{c2}"] = round(float(r), 3)
@@ -133,12 +133,12 @@ def _profile_dataframe(df, sample_size: int = 0) -> dict:
 async def data_profiler(file_url: str, format: str = "csv", sample_size: int = 0) -> str:
     """Profile a dataset comprehensively."""
     if not file_url.strip():
-        return json.dumps({"error": "No file URL or data provided."})
+        return tool_error("No file URL or data provided.", "INVALID_INPUT")
 
     try:
         import pandas as pd
 
-        # Get data
+        # Get data (network I/O is already async)
         if file_url.startswith("http"):
             import httpx
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -149,23 +149,26 @@ async def data_profiler(file_url: str, format: str = "csv", sample_size: int = 0
             data = file_url.encode("utf-8")
 
         fmt = format.lower().strip()
-        if fmt == "csv":
-            df = pd.read_csv(io.BytesIO(data))
-        elif fmt == "json":
-            df = pd.read_json(io.BytesIO(data))
-        elif fmt in ("excel", "xlsx", "xls"):
-            df = pd.read_excel(io.BytesIO(data))
-        else:
-            # Try to auto-detect
-            try:
-                df = pd.read_csv(io.BytesIO(data))
-            except Exception:
-                df = pd.read_json(io.BytesIO(data))
 
-        profile = _profile_dataframe(df, sample_size)
+        def _load_df():
+            if fmt == "csv":
+                return pd.read_csv(io.BytesIO(data))
+            elif fmt == "json":
+                return pd.read_json(io.BytesIO(data))
+            elif fmt in ("excel", "xlsx", "xls"):
+                return pd.read_excel(io.BytesIO(data))
+            else:
+                try:
+                    return pd.read_csv(io.BytesIO(data))
+                except Exception:
+                    return pd.read_json(io.BytesIO(data))
+
+        # Offload CPU-bound pandas parsing + profiling to thread pool
+        df = await asyncio.to_thread(_load_df)
+        profile = await asyncio.to_thread(_profile_dataframe, df, sample_size)
         profile["format"] = fmt
         profile["sampled"] = sample_size > 0 and len(df) > sample_size
         return json.dumps(profile, default=str)
 
     except Exception as e:
-        return json.dumps({"error": f"Data profiling failed: {str(e)}"})
+        return tool_error(f"Data profiling failed: {str(e)}", "INTERNAL")

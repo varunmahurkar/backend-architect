@@ -9,16 +9,22 @@ import time
 import asyncio
 
 from langchain_core.tools import tool
-from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
+from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample, tool_error
 
 logger = logging.getLogger(__name__)
+
+try:
+    import docker as _docker_module
+    DOCKER_AVAILABLE = True
+except ImportError:
+    DOCKER_AVAILABLE = False
 
 DOCKER_IMAGE = "python:3.12-slim"
 PREINSTALLED_PACKAGES = ["numpy", "pandas", "matplotlib", "scipy", "sympy"]
 
 
-async def _run_in_docker(code: str, timeout: int, packages: list[str] | None = None) -> dict:
-    """Execute Python code inside a Docker container."""
+def _run_in_docker_sync(code: str, timeout: int, packages: list[str] | None = None) -> dict:
+    """Synchronous Docker execution — runs in a thread via asyncio.to_thread."""
     import docker
     from docker.errors import ContainerError, ImageNotFound, APIError
 
@@ -39,7 +45,7 @@ async def _run_in_docker(code: str, timeout: int, packages: list[str] | None = N
     start_time = time.time()
 
     try:
-        container = client.containers.run(
+        container = client.containers.run(  # type: ignore[union-attr]
             DOCKER_IMAGE,
             command=["bash", "-c", full_cmd],
             detach=True,
@@ -98,6 +104,11 @@ async def _run_in_docker(code: str, timeout: int, packages: list[str] | None = N
             "execution_time_ms": 0,
             "success": False,
         }
+
+
+async def _run_in_docker(code: str, timeout: int, packages: list[str] | None = None) -> dict:
+    """Async wrapper — offloads blocking Docker calls to a thread pool."""
+    return await asyncio.to_thread(_run_in_docker_sync, code, timeout, packages)
 
 
 async def _run_subprocess_fallback(code: str, timeout: int) -> dict:
@@ -165,19 +176,21 @@ async def _run_subprocess_fallback(code: str, timeout: int) -> dict:
 async def python_executor(code: str, timeout_seconds: int = 10, packages: str = "") -> str:
     """Execute Python code in a sandboxed environment. Returns stdout, stderr, and execution metadata."""
     if not code.strip():
-        return json.dumps({"error": "No code provided."})
+        return tool_error("No code provided.", code="INVALID_INPUT", suggestion="Provide Python code to execute.")
 
     pkg_list = [p.strip() for p in packages.split(",") if p.strip()] if packages else None
 
     # Try Docker first
-    try:
-        import docker
-        docker.from_env().ping()
-        result = await _run_in_docker(code, timeout_seconds, pkg_list)
-        result["method"] = "docker"
-        return json.dumps(result, ensure_ascii=False)
-    except Exception as e:
-        logger.info(f"Docker unavailable ({e}), falling back to subprocess")
+    if DOCKER_AVAILABLE:
+        try:
+            await asyncio.to_thread(_docker_module.from_env().ping)
+            result = await _run_in_docker(code, timeout_seconds, pkg_list)
+            result["method"] = "docker"
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            logger.info(f"Docker unavailable ({e}), falling back to subprocess")
+    else:
+        logger.info("docker package not installed, falling back to subprocess")
 
     # Fallback to subprocess
     result = await _run_subprocess_fallback(code, timeout_seconds)
