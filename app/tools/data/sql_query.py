@@ -3,15 +3,30 @@ SQL Query Tool — Natural language to SQL on uploaded datasets.
 Loads CSV/JSON into SQLite in-memory, generates SQL with LLM, executes it.
 """
 
+import asyncio
 import json
 import logging
 import io
+import re
 import sqlite3
 
 from langchain_core.tools import tool
-from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
+from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample, tool_error
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_sql(sql: str) -> str | None:
+    """Return an error message if sql is not a safe single SELECT, else None."""
+    # Strip SQL comments before checking
+    clean = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
+    clean = re.sub(r'/\*.*?\*/', '', clean, flags=re.DOTALL)
+    statements = [s.strip() for s in clean.split(';') if s.strip()]
+    if len(statements) > 1:
+        return "Only single SELECT statements are allowed — multiple statements detected."
+    if not statements or not statements[0].upper().startswith('SELECT'):
+        return "Only SELECT queries are allowed."
+    return None
 
 
 async def _load_dataframe(file_url: str, format_hint: str = "csv"):
@@ -77,22 +92,22 @@ def _get_table_schema(conn: sqlite3.Connection, table_name: str) -> str:
 async def sql_query(question: str, file_url: str = "", table_name: str = "data", query: str = "") -> str:
     """Query data with natural language or SQL."""
     if not question.strip() and not query.strip():
-        return json.dumps({"error": "Provide either a question or a raw SQL query."})
+        return tool_error("Provide either a question or a raw SQL query.", "INVALID_INPUT")
     if not file_url.strip():
-        return json.dumps({"error": "No file URL or data provided."})
+        return tool_error("No file URL or data provided.", "INVALID_INPUT")
 
     try:
-        # Load data
+        # Load data (CPU-bound pandas in thread)
         df = await _load_dataframe(file_url)
-        conn = _df_to_sqlite(df, table_name)
+        conn = await asyncio.to_thread(_df_to_sqlite, df, table_name)
         schema = _get_table_schema(conn, table_name)
 
         # Generate SQL from natural language if not provided
         sql = query.strip()
         if not sql and question.strip():
             try:
-                from app.services.llm_service import get_llm
-                from langchain_core.messages import HumanMessage, SystemMessage
+                from app.services.llm_service import invoke_with_failover
+                from langchain_core.messages import HumanMessage
 
                 system = f"""You are an expert SQL query generator.
 Table name: {table_name}
@@ -100,11 +115,10 @@ Schema: {schema}
 SQLite dialect. Generate only the SQL SELECT query (no explanation, no markdown).
 The query must be safe — only SELECT statements allowed."""
 
-                llm = get_llm(provider="google")
-                resp = await llm.ainvoke([
-                    SystemMessage(content=system),
-                    HumanMessage(content=f"Question: {question}"),
-                ])
+                resp = await invoke_with_failover(
+                    [HumanMessage(content=f"Question: {question}")],
+                    system=system,
+                )
                 sql = resp.content.strip()
                 # Strip markdown if present
                 if sql.startswith("```"):
@@ -112,32 +126,40 @@ The query must be safe — only SELECT statements allowed."""
                     sql = "\n".join(lines[1:-1])
                 sql = sql.strip().rstrip(";")
             except Exception as e:
-                return json.dumps({"error": f"SQL generation failed: {str(e)}", "schema": schema})
+                return tool_error(f"SQL generation failed: {str(e)}", "EXTERNAL_API", "Try providing a raw SQL query instead.")
 
-        # Safety check — only allow SELECT
-        if not sql.strip().upper().startswith("SELECT"):
-            return json.dumps({"error": "Only SELECT queries are allowed.", "generated_sql": sql})
+        # Strict SQL safety validation
+        validation_error = _validate_sql(sql)
+        if validation_error:
+            return tool_error(validation_error, "INVALID_INPUT", "Only single SELECT statements are permitted.")
 
-        # Execute
+        # Execute with read-only PRAGMA
+        conn.execute("PRAGMA query_only = ON")
         cursor = conn.execute(sql)
         columns = [d[0] for d in cursor.description]
         rows = cursor.fetchmany(500)  # Limit results
         result = [dict(zip(columns, row)) for row in rows]
 
+        # Size guard: truncate if JSON > 500 KB
+        result_json = json.dumps(result, default=str)
+        if len(result_json) > 500_000:
+            result = result[:100]
+            logger.warning("[sql_query] Result truncated to 100 rows — JSON exceeded 500 KB")
+
         # Generate explanation
         explanation = ""
         if question.strip():
             try:
-                from app.services.llm_service import get_llm
-                from langchain_core.messages import HumanMessage, SystemMessage
-                llm = get_llm(provider="google")
-                resp = await llm.ainvoke([
-                    SystemMessage(content="Briefly explain in 1-2 sentences what this SQL query does and what the results mean."),
-                    HumanMessage(content=f"Question: {question}\nSQL: {sql}\nResult preview: {str(result[:3])}"),
-                ])
+                from app.services.llm_service import invoke_with_failover
+                from langchain_core.messages import HumanMessage
+
+                resp = await invoke_with_failover(
+                    [HumanMessage(content=f"Question: {question}\nSQL: {sql}\nResult preview: {str(result[:3])}")],
+                    system="Briefly explain in 1-2 sentences what this SQL query does and what the results mean.",
+                )
                 explanation = resp.content.strip()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[sql_query] Explanation generation failed: {e}")
 
         conn.close()
         return json.dumps({
@@ -151,6 +173,6 @@ The query must be safe — only SELECT statements allowed."""
         }, default=str)
 
     except sqlite3.Error as e:
-        return json.dumps({"error": f"SQL execution failed: {str(e)}", "sql": sql if 'sql' in locals() else ""})
+        return tool_error(f"SQL execution failed: {str(e)}", "INTERNAL", "Check your SQL syntax and column names.")
     except Exception as e:
-        return json.dumps({"error": f"Query failed: {str(e)}"})
+        return tool_error(f"Query failed: {str(e)}", "INTERNAL")

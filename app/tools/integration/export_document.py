@@ -3,19 +3,35 @@ Export Document Tool — Export content as formatted PDF, DOCX, Markdown, or HTM
 Uses markdown→HTML conversion + PyMuPDF for PDF generation.
 """
 
+import html as html_lib
 import json
 import logging
 import base64
 import re
 
 from langchain_core.tools import tool
-from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
+from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample, tool_error
+
+try:
+    import fitz  # noqa: F401
+    FITZ_AVAILABLE = True
+except ImportError:
+    FITZ_AVAILABLE = False
+
+try:
+    from docx import Document as _DocxDocument  # noqa: F401
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
 
 def _markdown_to_html(md: str, title: str = "", template: str = "report") -> str:
     """Convert markdown to styled HTML."""
+    # Escape the title to prevent XSS via user-controlled input
+    safe_title = html_lib.escape(title) if title else ""
+
     # Headers
     html = md
     for i in range(6, 0, -1):
@@ -70,14 +86,14 @@ def _markdown_to_html(md: str, title: str = "", template: str = "report") -> str
     }
 
     style = styles.get(template, styles["report"])
-    title_html = f"<h1>{title}</h1>\n" if title else ""
+    title_html = f"<h1>{safe_title}</h1>\n" if safe_title else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title or 'Document'}</title>
+<title>{safe_title or 'Document'}</title>
 <style>{style}</style>
 </head>
 <body>
@@ -88,8 +104,8 @@ def _markdown_to_html(md: str, title: str = "", template: str = "report") -> str
 
 def _html_to_pdf_bytes(html: str) -> bytes:
     """Convert HTML to PDF using PyMuPDF (Story API)."""
+    import fitz
     try:
-        import fitz
         # Use PyMuPDF's Story API for HTML→PDF
         story = fitz.Story(html=html)
         writer = fitz.DocumentWriter(io_device := fitz.open())
@@ -103,12 +119,11 @@ def _html_to_pdf_bytes(html: str) -> bytes:
                 break
         writer.close()
         return io_device.write()
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[export_document] Story API PDF failed ({e}), falling back to plain text PDF")
         # Fallback: create simple PDF with text only
-        import fitz
         doc = fitz.open()
         page = doc.new_page()
-        import re
         text = re.sub(r'<[^>]+>', ' ', html)
         text = re.sub(r'\s+', ' ', text).strip()
         page.insert_text((50, 50), text[:5000], fontsize=11)
@@ -187,7 +202,7 @@ def _md_to_docx_bytes(md: str, title: str = "") -> bytes:
 async def export_document(content: str, format: str = "html", title: str = "", template: str = "report") -> str:
     """Export content as a formatted document."""
     if not content.strip():
-        return json.dumps({"error": "No content provided."})
+        return tool_error("No content provided.", "INVALID_INPUT")
 
     fmt = format.lower().strip()
     safe_title = re.sub(r'[^\w\s-]', '', title or "document").strip().replace(" ", "-").lower() or "document"
@@ -203,16 +218,20 @@ async def export_document(content: str, format: str = "html", title: str = "", t
             filename = f"{safe_title}.html"
 
         elif fmt == "pdf":
+            if not FITZ_AVAILABLE:
+                return tool_error("PyMuPDF (fitz) not installed.", "DEPENDENCY_MISSING", "Run: pip install PyMuPDF  or use format='html'")
             html = _markdown_to_html(content, title, template)
             file_bytes = _html_to_pdf_bytes(html)
             filename = f"{safe_title}.pdf"
 
         elif fmt == "docx":
+            if not DOCX_AVAILABLE:
+                return tool_error("python-docx not installed.", "DEPENDENCY_MISSING", "Run: pip install python-docx  or use format='html'")
             file_bytes = _md_to_docx_bytes(content, title)
             filename = f"{safe_title}.docx"
 
         else:
-            return json.dumps({"error": f"Unknown format: '{fmt}'. Use: pdf, docx, md, html"})
+            return tool_error(f"Unknown format: '{fmt}'. Use: pdf, docx, md, html", "INVALID_INPUT")
 
         encoded = base64.b64encode(file_bytes).decode("utf-8")
         return json.dumps({
