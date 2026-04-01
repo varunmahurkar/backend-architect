@@ -8,79 +8,87 @@ import logging
 import asyncio
 
 from langchain_core.tools import tool
-from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
+from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample, tool_error
 
 logger = logging.getLogger(__name__)
+
+# Cap concurrent academic API requests to avoid bans under multi-user load
+_search_semaphore = asyncio.Semaphore(2)
+
+_MAX_PAPERS = 20  # Hard cap on papers returned
 
 
 async def _search_arxiv(query: str, max_results: int) -> list[dict]:
     """Search arXiv for papers."""
-    try:
-        import httpx
-        params = {
-            "search_query": f"all:{query}",
-            "start": 0,
-            "max_results": max_results,
-            "sortBy": "relevance",
-            "sortOrder": "descending",
-        }
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get("http://export.arxiv.org/api/query", params=params)
-            resp.raise_for_status()
+    async with _search_semaphore:
+        try:
+            import httpx
+            import xml.etree.ElementTree as ET
 
-        import xml.etree.ElementTree as ET
-        root = ET.fromstring(resp.text)
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        papers = []
-        for entry in root.findall("atom:entry", ns):
-            title_el = entry.find("atom:title", ns)
-            summary_el = entry.find("atom:summary", ns)
-            id_el = entry.find("atom:id", ns)
-            authors = [a.find("atom:name", ns).text for a in entry.findall("atom:author", ns) if a.find("atom:name", ns) is not None]
-            published_el = entry.find("atom:published", ns)
-            papers.append({
-                "title": title_el.text.strip().replace("\n", " ") if title_el is not None else "",
-                "abstract": summary_el.text.strip().replace("\n", " ")[:500] if summary_el is not None else "",
-                "authors": authors[:3],
-                "year": published_el.text[:4] if published_el is not None else "",
-                "url": id_el.text if id_el is not None else "",
-                "source": "arXiv",
-            })
-        return papers
-    except Exception as e:
-        logger.warning(f"arXiv search failed: {e}")
-        return []
+            params = {
+                "search_query": f"all:{query}",
+                "start": 0,
+                "max_results": max_results,
+                "sortBy": "relevance",
+                "sortOrder": "descending",
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get("http://export.arxiv.org/api/query", params=params)
+                resp.raise_for_status()
+
+            root = ET.fromstring(resp.text)
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            papers = []
+            for entry in root.findall("atom:entry", ns):
+                title_el = entry.find("atom:title", ns)
+                summary_el = entry.find("atom:summary", ns)
+                id_el = entry.find("atom:id", ns)
+                authors = [a.find("atom:name", ns).text for a in entry.findall("atom:author", ns) if a.find("atom:name", ns) is not None]
+                published_el = entry.find("atom:published", ns)
+                papers.append({
+                    "title": title_el.text.strip().replace("\n", " ") if title_el is not None else "",
+                    "abstract": summary_el.text.strip().replace("\n", " ")[:500] if summary_el is not None else "",
+                    "authors": authors[:3],
+                    "year": published_el.text[:4] if published_el is not None else "",
+                    "url": id_el.text if id_el is not None else "",
+                    "source": "arXiv",
+                })
+            return papers
+        except Exception as e:
+            logger.warning(f"arXiv search failed: {e}")
+            return []
 
 
 async def _search_semantic_scholar(query: str, max_results: int) -> list[dict]:
     """Search Semantic Scholar."""
-    try:
-        import httpx
-        params = {
-            "query": query,
-            "limit": max_results,
-            "fields": "title,abstract,authors,year,externalIds,citationCount",
-        }
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get("https://api.semanticscholar.org/graph/v1/paper/search", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+    async with _search_semaphore:
+        try:
+            import httpx
+            params = {
+                "query": query,
+                "limit": max_results,
+                "fields": "title,abstract,authors,year,externalIds,citationCount",
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get("https://api.semanticscholar.org/graph/v1/paper/search", params=params)
+                resp.raise_for_status()
+                data = resp.json()
 
-        papers = []
-        for p in data.get("data", []):
-            papers.append({
-                "title": p.get("title", ""),
-                "abstract": (p.get("abstract") or "")[:500],
-                "authors": [a.get("name", "") for a in p.get("authors", [])[:3]],
-                "year": str(p.get("year", "")),
-                "citation_count": p.get("citationCount", 0),
-                "url": f"https://semanticscholar.org/paper/{p.get('paperId', '')}",
-                "source": "Semantic Scholar",
-            })
-        return papers
-    except Exception as e:
-        logger.warning(f"Semantic Scholar search failed: {e}")
-        return []
+            papers = []
+            for p in data.get("data", []):
+                papers.append({
+                    "title": p.get("title", ""),
+                    "abstract": (p.get("abstract") or "")[:500],
+                    "authors": [a.get("name", "") for a in p.get("authors", [])[:3]],
+                    "year": str(p.get("year", "")),
+                    "citation_count": p.get("citationCount", 0),
+                    "url": f"https://semanticscholar.org/paper/{p.get('paperId', '')}",
+                    "source": "Semantic Scholar",
+                })
+            return papers
+        except Exception as e:
+            logger.warning(f"Semantic Scholar search failed: {e}")
+            return []
 
 
 @nurav_tool(metadata=ToolMetadata(
@@ -108,7 +116,7 @@ async def literature_review(topic: str, max_papers: int = 15, sources: str = "ar
     if not topic.strip():
         return json.dumps({"error": "No topic provided."})
 
-    max_papers = max(3, min(30, max_papers))
+    max_papers = max(3, min(_MAX_PAPERS, max_papers))
     per_source = max_papers // 2
 
     source_list = [s.strip() for s in sources.lower().split(",")]
@@ -137,12 +145,12 @@ async def literature_review(topic: str, max_papers: int = 15, sources: str = "ar
     unique_papers = unique_papers[:max_papers]
 
     if not unique_papers:
-        return json.dumps({"error": "No papers found. Try a different topic or broader search terms."})
+        return tool_error("No papers found. Try a different topic or broader search terms.", "EXTERNAL_API")
 
-    # Synthesize with LLM
+    # Synthesize with LLM (with failover)
     try:
-        from app.services.llm_service import get_llm
-        from langchain_core.messages import HumanMessage, SystemMessage
+        from app.services.llm_service import invoke_with_failover
+        from langchain_core.messages import HumanMessage
 
         papers_summary = "\n\n".join([
             f"Title: {p['title']}\nAuthors: {', '.join(p['authors'])}\nYear: {p['year']}\nAbstract: {p['abstract']}"
@@ -164,11 +172,10 @@ Respond ONLY with valid JSON:
   "temporal_trends": "How the field has evolved over time"
 }}"""
 
-        llm = get_llm(provider="google")
-        resp = await llm.ainvoke([
-            SystemMessage(content=system),
-            HumanMessage(content=f"Topic: {topic}\n\nPapers:\n{papers_summary}"),
-        ])
+        resp = await invoke_with_failover(
+            [HumanMessage(content=f"Topic: {topic}\n\nPapers:\n{papers_summary}")],
+            system=system,
+        )
         result_text = resp.content.strip()
         if result_text.startswith("```"):
             result_text = "\n".join(result_text.split("\n")[1:-1])
