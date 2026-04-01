@@ -5,6 +5,7 @@ Chart Generator Tool — 3 rendering engines with auto-routing.
 - Pure SVG: crisp, scalable, lightweight for small datasets
 """
 
+import asyncio
 import json
 import logging
 import base64
@@ -12,7 +13,13 @@ import io
 from typing import Any
 
 from langchain_core.tools import tool
-from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample
+from app.tools.base import nurav_tool, ToolMetadata, ToolStatus, ToolExample, tool_error
+
+try:
+    import matplotlib  # noqa: F401
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -246,18 +253,32 @@ async def chart_generator(data: str = '{"labels": ["A", "B", "C"], "values": [10
             chart_url = _render_svg(parsed, chart_type, title)
             engine = "svg"
         else:  # png (or html fallback to png)
-            chart_url = _render_matplotlib(parsed, chart_type, title)
+            if not MATPLOTLIB_AVAILABLE:
+                return tool_error(
+                    "matplotlib package not installed.",
+                    "DEPENDENCY_MISSING",
+                    "Run: pip install matplotlib",
+                )
+            # Offload CPU-bound rendering to thread pool
+            chart_url = await asyncio.to_thread(_render_matplotlib, parsed, chart_type, title)
             engine = "matplotlib"
             fmt = "png"
 
-        return json.dumps({
+        # Warn if output is very large (> 2 MB)
+        b64_bytes = len(chart_url.encode("utf-8"))
+        response: dict = {
             "chart_url": chart_url,
             "chart_type": chart_type,
             "data_points": total_points,
             "format_used": fmt,
             "render_engine": engine,
-        })
+        }
+        if b64_bytes > 2 * 1024 * 1024:
+            size_warning = f"Chart output is {b64_bytes // 1024} KB — consider reducing data points or using SVG."
+            logger.warning(f"[chart_generator] {size_warning}")
+            response["size_warning"] = size_warning
+        return json.dumps(response)
 
     except Exception as e:
-        logger.error(f"Chart rendering failed: {e}")
-        return json.dumps({"error": f"Failed to render chart: {str(e)}"})
+        logger.error(f"[chart_generator] Chart rendering failed: {e}")
+        return tool_error(f"Failed to render chart: {str(e)}", "INTERNAL")
